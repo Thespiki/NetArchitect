@@ -1,5 +1,5 @@
-// Audio 100 % procédural (Web Audio) : synthwave lente qui accélère avec la tension,
-// ronronnement des baies de brassage et bruitages d'interface. Aucun fichier son.
+// 100% procedural audio (Web Audio): slow synthwave that speeds up with the tension, the hum of
+// the server racks and interface sounds. No audio file.
 
 export type Sfx =
   | 'click'
@@ -19,7 +19,7 @@ type Mode = 'menu' | 'build' | 'live';
 
 const midi = (n: number) => 440 * 2 ** ((n - 69) / 12);
 
-// La mineur : Am – F – C – G, une mesure par accord.
+// A minor: Am – F – C – G, one bar per chord.
 const CHORDS = [
   { root: 45, notes: [57, 60, 64] },
   { root: 41, notes: [53, 57, 60] },
@@ -55,7 +55,7 @@ export class AudioEngine {
     return !!this.ctx;
   }
 
-  /** À appeler depuis un geste de l'utilisateur (politique d'autoplay des navigateurs). */
+  /** Call from a user gesture (browser autoplay policy). */
   unlock(): void {
     if (this.ctx) {
       if (this.ctx.state === 'suspended') void this.ctx.resume();
@@ -128,12 +128,12 @@ export class AudioEngine {
     this.updateAmbience();
   }
 
-  /** Tension musicale 0 → 1 (frustration, pannes, attaques). */
+  /** Musical tension 0 → 1 (frustration, failures, attacks). */
   setIntensity(x: number): void {
     this.target = Math.max(0, Math.min(1, x));
   }
 
-  /** Charge moyenne du réseau : module le ronronnement des baies. */
+  /** Average network load: modulates the hum of the racks. */
   setHum(level: number): void {
     this.humLevel = Math.max(0, Math.min(1, level));
     this.updateAmbience();
@@ -169,7 +169,7 @@ export class AudioEngine {
 
   private startAmbience(): void {
     const ctx = this.ctx!;
-    // Bruit brun filtré : le souffle grave des baies.
+    // Filtered brown noise: the low rumble of the racks.
     const len = ctx.sampleRate * 3;
     const brown = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = brown.getChannelData(0);
@@ -188,7 +188,7 @@ export class AudioEngine {
     this.humGain.gain.value = 0;
     src.connect(lp).connect(this.humGain).connect(this.ambBus);
     src.start();
-    // Ventilateurs : bruit blanc en bande étroite, très discret.
+    // Fans: narrow-band white noise, very quiet.
     const fan = ctx.createBufferSource();
     fan.buffer = this.noise;
     fan.loop = true;
@@ -200,7 +200,7 @@ export class AudioEngine {
     this.fanGain.gain.value = 0;
     fan.connect(bp).connect(this.fanGain).connect(this.ambBus);
     fan.start();
-    // Secteur 50 Hz.
+    // 50 Hz mains hum.
     const mains = ctx.createOscillator();
     mains.frequency.value = 50;
     const mg = ctx.createGain();
@@ -385,7 +385,7 @@ export class AudioEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Bruitages
+  // Sound effects
 
   sfx(name: Sfx): void {
     const ctx = this.ctx;

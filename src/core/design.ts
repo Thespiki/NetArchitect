@@ -1,6 +1,8 @@
-// Conception du joueur : matériel posé, câbles tirés, budget et règles de câblage.
+// Player design: placed hardware, cables, budget and cabling rules.
 
+import { loc, T } from '../i18n/index.ts';
 import { CABLES, DEVICES, cableCost, meters } from './catalog.ts';
+import { cmp } from './detmath.ts';
 import { roomAt, type EndpointDef, type LevelDef } from './level.ts';
 import type { CableKind, EquipmentKind, NodeKind, SkillId, Vec } from './types.ts';
 
@@ -54,7 +56,7 @@ const ENDPOINT_PORTS: Record<EndpointDef['kind'], number> = {
 };
 
 export function endpointLabel(e: EndpointDef): string {
-  return e.label ?? e.id.toUpperCase();
+  return e.label ? loc(e.label) : e.id.toUpperCase();
 }
 
 export function deviceLabel(d: PlacedDevice): string {
@@ -80,7 +82,7 @@ export function isEquipment(kind: NodeKind): kind is EquipmentKind {
   return kind in DEVICES;
 }
 
-/** Longueur d'un câble : trajet orthogonal (goulottes), en cases. */
+/** Cable length: orthogonal route (cable trays), in cells. */
 export function cableLength(a: Vec, b: Vec): number {
   return Math.max(1, Math.abs(a.x - b.x) + Math.abs(a.y - b.y));
 }
@@ -123,7 +125,7 @@ export function designCost(level: LevelDef, design: Design): number {
   return total;
 }
 
-/** Câbles devenus trop longs après un déplacement : ils ne transportent plus rien. */
+/** Cables that became too long after a move: they carry nothing. */
 export function brokenCables(level: LevelDef, design: Design): Set<string> {
   const out = new Set<string>();
   for (const c of design.cables) {
@@ -157,12 +159,12 @@ export function canPlace(
 ): Check {
   const spec = DEVICES[kind];
   if (!availableKit(level, skills).equipment.has(kind)) {
-    return { ok: false, reason: `${spec.name} : pas encore débloqué.` };
+    return { ok: false, reason: T.design.notUnlocked(spec.name) };
   }
-  if (!inBounds(level, x, y)) return { ok: false, reason: 'Hors du bâtiment.' };
-  if (occupied(level, design, x, y)) return { ok: false, reason: 'Emplacement déjà occupé.' };
+  if (!inBounds(level, x, y)) return { ok: false, reason: T.design.outside };
+  if (occupied(level, design, x, y)) return { ok: false, reason: T.design.occupied };
   const left = level.budget - designCost(level, design);
-  if (spec.cost > left) return { ok: false, reason: `Budget insuffisant (il reste ${Math.round(left)} €).`, cost: spec.cost };
+  if (spec.cost > left) return { ok: false, reason: T.design.noBudget(left), cost: spec.cost };
   return { ok: true, cost: spec.cost };
 }
 
@@ -191,9 +193,9 @@ export function placeDevice(
 
 export function canMove(level: LevelDef, design: Design, id: string, x: number, y: number): Check {
   const dev = design.devices.find((d) => d.id === id);
-  if (!dev) return { ok: false, reason: 'Élément fixe : il ne peut pas être déplacé.' };
-  if (!inBounds(level, x, y)) return { ok: false, reason: 'Hors du bâtiment.' };
-  if (occupied(level, design, x, y, id)) return { ok: false, reason: 'Emplacement déjà occupé.' };
+  if (!dev) return { ok: false, reason: T.design.fixed };
+  if (!inBounds(level, x, y)) return { ok: false, reason: T.design.outside };
+  if (occupied(level, design, x, y, id)) return { ok: false, reason: T.design.occupied };
   return { ok: true, cost: 0 };
 }
 
@@ -227,40 +229,40 @@ export function canConnect(
   skills: ReadonlySet<SkillId>,
 ): Check {
   const spec = CABLES[kind];
-  if (aId === bId) return { ok: false, reason: 'Choisis deux éléments différents.' };
+  if (aId === bId) return { ok: false, reason: T.design.sameNode };
   const a = nodeRef(level, design, aId);
   const b = nodeRef(level, design, bId);
-  if (!a || !b) return { ok: false, reason: 'Élément introuvable.' };
+  if (!a || !b) return { ok: false, reason: T.design.notFound };
   const length = cableLength(a, b);
   const cost = cableCost(kind, length);
   const fail = (reason: string): Check => ({ ok: false, reason, cost, length });
-  if (!availableKit(level, skills).cables.has(kind)) return fail(`${spec.name} : pas encore débloqué.`);
+  if (!availableKit(level, skills).cables.has(kind)) return fail(T.design.notUnlocked(spec.name));
   if (a.kind === 'laptop' || b.kind === 'laptop') {
-    return fail('Les portables se connectent en Wi-Fi : place une borne à portée.');
+    return fail(T.design.laptopWifi);
   }
   const aEq = isEquipment(a.kind);
   const bEq = isEquipment(b.kind);
-  if (!aEq && !bEq) return fail('Relie les postes à un switch ou à un routeur, pas directement entre eux.');
+  if (!aEq && !bEq) return fail(T.design.noDirect);
   for (const [x, y] of [
     [a, b],
     [b, a],
   ] as const) {
     if (x.kind === 'internet' && !(isEquipment(y.kind) && DEVICES[y.kind].nat)) {
-      return fail('L’arrivée opérateur se branche sur un routeur (NAT).');
+      return fail(T.design.ispRouter);
     }
     if (x.kind === 'ap' && !isEquipment(y.kind)) {
-      return fail('La borne Wi-Fi n’a qu’un port : son lien montant vers un switch ou un routeur.');
+      return fail(T.design.apUplink);
     }
   }
   for (const n of [a, b]) {
     const used = portsUsed(design, n.id);
-    if (used >= n.ports) return fail(`${n.label} : plus de port libre (${used}/${n.ports}).`);
+    if (used >= n.ports) return fail(T.design.noPort(n.label, used, n.ports));
   }
   if (length > spec.maxLen) {
-    return fail(`Trop long : ${meters(length)} (max ${meters(spec.maxLen)} en ${kind === 'rj45' ? 'RJ45' : 'fibre'}).`);
+    return fail(T.design.tooLong(meters(length), meters(spec.maxLen), T.catalog.cables[kind].kind));
   }
   const left = level.budget - designCost(level, design);
-  if (cost > left) return fail(`Budget insuffisant (il reste ${Math.round(left)} €).`);
+  if (cost > left) return fail(T.design.noBudget(left));
   return { ok: true, cost, length };
 }
 
@@ -280,8 +282,8 @@ export function connect(
 }
 
 /**
- * Raccorde en RJ45 les postes de travail non câblés les plus proches du switch/routeur choisi :
- * ceux de sa pièce, ou ceux à portée s'il est dans un couloir. Les serveurs se câblent à la main.
+ * Connects the nearest uncabled workstations to the chosen switch/router with RJ45:
+ * those in its room, or those within reach if it sits in a corridor. Servers are cabled by hand.
  */
 export function autoCable(level: LevelDef, design: Design, hubId: string, skills: ReadonlySet<SkillId>): number {
   const hub = nodeRef(level, design, hubId);
@@ -292,7 +294,7 @@ export function autoCable(level: LevelDef, design: Design, hubId: string, skills
     .filter((e) => !room || roomAt(level, e.x, e.y)?.id === room.id)
     .map((e) => ({ e, d: cableLength(hub, e) }))
     .filter((c) => c.d <= CABLES.rj45.maxLen)
-    .sort((p, q) => p.d - q.d || p.e.id.localeCompare(q.e.id));
+    .sort((p, q) => p.d - q.d || cmp(p.e.id, q.e.id));
   let added = 0;
   for (const { e } of candidates) {
     if (portsUsed(design, hubId) >= hub.ports) break;

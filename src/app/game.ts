@@ -1,6 +1,7 @@
-// Écran de mission : phases Architecture → Configuration → Journée, boucle de jeu et interactions.
+// Mission screen: Architecture → Configuration → Day phases, game loop and interactions.
 
-import { CABLES, DEVICES, EQUIPMENT_ORDER, euros, meters, TRAFFIC } from '../core/catalog.ts';
+import { euros, loc, pctN, T } from '../i18n/index.ts';
+import { CABLES, DEVICES, EQUIPMENT_ORDER, meters, TRAFFIC } from '../core/catalog.ts';
 import { cloneConfig, defaultConfig, type NetConfig } from '../core/config.ts';
 import type { ConsoleHost, Line } from '../core/console.ts';
 import {
@@ -24,10 +25,14 @@ import {
   type Design,
 } from '../core/design.ts';
 import { preflight, type Issue } from '../core/diagnostics.ts';
-import type { GuideState, LevelDef } from '../core/level.ts';
-import { LEVELS } from '../core/levels.ts';
+import type { GuideState, GuideTarget } from '../core/guide.ts';
+import type { LevelDef } from '../core/level.ts';
+import { CAMPAIGN, LEVELS } from '../core/levels.ts';
 import { buildNetwork, type Network } from '../core/network.ts';
 import { evaluate } from '../core/objectives.ts';
+import type { RunResponse } from '../core/protocol.ts';
+import { recordRun } from '../core/run.ts';
+import { missionScore } from '../core/score.ts';
 import { Simulation, STEP } from '../core/simulation.ts';
 import type { CableKind, EquipmentKind, Phase, SkillId, Vec } from '../core/types.ts';
 import { topologyLayout } from '../render/layout.ts';
@@ -39,25 +44,13 @@ import { helpBody } from './help.ts';
 import { showBriefing, showDebrief } from './missionModals.ts';
 import { modalOpen, openModal } from './modal.ts';
 import * as P from './panels.ts';
-import { currentRank, isUnlocked, planFor } from './save.ts';
+import { currentRank, isUnlocked, planFor, totalScore } from './save.ts';
 import type { Screen } from './screens.ts';
+import { Coach, type Rect } from './tutorial.ts';
 
 type Tool = { t: 'select' } | { t: 'place'; kind: EquipmentKind } | { t: 'cable'; kind: CableKind; from?: string } | { t: 'delete' };
 
-const SHORT: Record<EquipmentKind, string> = {
-  switch8: 'Switch 8',
-  switch24: 'Switch 24',
-  router: 'Routeur',
-  ap: 'Borne Wi-Fi',
-  switch_l3: 'Switch L3',
-  router_pro: 'Routeur pro',
-};
-
-const PHASES: { id: Phase; label: string }[] = [
-  { id: 'build', label: 'Architecture' },
-  { id: 'config', label: 'Configuration' },
-  { id: 'live', label: 'Journée' },
-];
+const PHASES: Phase[] = ['build', 'config', 'live'];
 
 export class GameScreen implements Screen {
   readonly el: HTMLElement;
@@ -105,6 +98,10 @@ export class GameScreen implements Screen {
   private toastTimer = 0;
   private cards: P.Card[] = [];
   private readonly reduced = reducedMotion();
+  private coach: Coach | null = null;
+  private cameraMoved = false;
+  private readonly commands: { cmd: string; ok: boolean }[] = [];
+  private dayFinished = false;
   private readonly ctx: P.PanelCtx;
   private readonly host: ConsoleHost;
   private readonly resizeObs: ResizeObserver;
@@ -160,40 +157,46 @@ export class GameScreen implements Screen {
 
     // --- HUD
     const phaseBtns = new Map<Phase, HTMLButtonElement>();
+    const H = T.hud;
     const phaseNav = h(
       'nav',
       { class: 'phases', aria: { label: 'Phases' } },
       ...PHASES.map((p, i) => {
         const b = h(
           'button',
-          { class: 'phase', type: 'button', on: { click: () => this.goPhase(p.id) } },
+          { class: 'phase', type: 'button', data: { tut: `phase-${p}` }, on: { click: () => this.goPhase(p) } },
           h('span', { class: 'phase-num' }, String(i + 1)),
-          h('span', { class: 'phase-label' }, p.label),
+          h('span', { class: 'phase-label' }, T.phases[p]),
         );
-        phaseBtns.set(p.id, b);
+        phaseBtns.set(p, b);
         return b;
       }),
     );
     const budget = h('b', null, '');
-    const budgetLabel = h('span', { class: 'lbl' }, 'Budget restant');
+    const budgetLabel = h('span', { class: 'lbl' }, H.budgetLeft);
     const budgetSub = h('small', null, '');
-    const budgetBox = h('div', { class: 'stat budget' }, budgetLabel, h('span', { class: 'val' }, budget, budgetSub));
+    const budgetBox = h('div', { class: 'stat budget', data: { tut: 'hud-budget' } }, budgetLabel, h('span', { class: 'val' }, budget, budgetSub));
     const clock = h('b', null, '09:00');
     const frustBar = h('i', null);
-    const frustVal = h('b', null, '0 %');
+    const frustVal = h('b', null, '0');
     const frustBox = h(
       'div',
-      { class: 'stat frustration', role: 'meter', aria: { label: 'Frustration des utilisateurs', valuemin: '0', valuemax: '100', valuenow: '0' } },
-      h('span', { class: 'lbl' }, 'Frustration'),
+      {
+        class: 'stat frustration',
+        role: 'meter',
+        data: { tut: 'hud-frustration' },
+        aria: { label: H.frustrationAria, valuemin: '0', valuemax: '100', valuenow: '0' },
+      },
+      h('span', { class: 'lbl' }, H.frustration),
       h('span', { class: 'val' }, h('span', { class: 'gauge' }, frustBar), frustVal),
     );
     const security = h('b', null, '—');
-    const securityBox = h('div', { class: 'stat security' }, h('span', { class: 'lbl' }, 'Sécurité'), h('span', { class: 'val' }, security));
+    const securityBox = h('div', { class: 'stat security' }, h('span', { class: 'lbl' }, H.security), h('span', { class: 'val' }, security));
     const speedBtns = new Map<number, HTMLButtonElement>();
-    const pauseBtn = h('button', { class: 'seg', type: 'button', title: 'Pause (Espace)', on: { click: () => this.togglePause() } }, '❚❚');
+    const pauseBtn = h('button', { class: 'seg', type: 'button', title: H.pause, on: { click: () => this.togglePause() } }, '❚❚');
     const speedBox = h(
       'div',
-      { class: 'segmented speed', role: 'group', aria: { label: 'Vitesse' } },
+      { class: 'segmented speed', role: 'group', data: { tut: 'hud-speed' }, aria: { label: H.speed } },
       pauseBtn,
       ...[1, 2, 4].map((s) => {
         const b = h('button', { class: 'seg', type: 'button', on: { click: () => this.setSpeed(s) } }, `×${s}`);
@@ -201,8 +204,8 @@ export class GameScreen implements Screen {
         return b;
       }),
     );
-    const viewPhys = h('button', { class: 'seg', type: 'button', on: { click: () => this.setView('phys') } }, 'Plan');
-    const viewTopo = h('button', { class: 'seg', type: 'button', on: { click: () => this.setView('topo') } }, 'Topologie');
+    const viewPhys = h('button', { class: 'seg', type: 'button', on: { click: () => this.setView('phys') } }, H.floor);
+    const viewTopo = h('button', { class: 'seg', type: 'button', data: { tut: 'hud-topo' }, on: { click: () => this.setView('topo') } }, H.topology);
     const sound = h('button', { class: 'icon-btn', type: 'button', on: { click: () => this.toggleSound() } }, '');
     this.hud = {
       phases: phaseBtns,
@@ -229,31 +232,31 @@ export class GameScreen implements Screen {
       h(
         'div',
         { class: 'hud-left' },
-        h('button', { class: 'icon-btn', type: 'button', title: 'Menu', aria: { label: 'Menu' }, on: { click: () => this.openMenu() } }, '☰'),
-        h('div', { class: 'mission-id' }, h('b', null, level.company), h('span', null, level.title)),
+        h('button', { class: 'icon-btn', type: 'button', title: H.menu, aria: { label: H.menu }, on: { click: () => this.openMenu() } }, '☰'),
+        h('div', { class: 'mission-id' }, h('b', null, level.company), h('span', null, loc(level.title))),
       ),
       phaseNav,
-      h('div', { class: 'hud-stats' }, budgetBox, h('div', { class: 'stat clock' }, h('span', { class: 'lbl' }, 'Heure'), h('span', { class: 'val' }, clock)), frustBox, securityBox),
+      h('div', { class: 'hud-stats' }, budgetBox, h('div', { class: 'stat clock' }, h('span', { class: 'lbl' }, H.time), h('span', { class: 'val' }, clock)), frustBox, securityBox),
       h(
         'div',
         { class: 'hud-right' },
         speedBox,
-        h('div', { class: 'segmented view', role: 'group', aria: { label: 'Vue (Tab)' } }, viewPhys, viewTopo),
+        h('div', { class: 'segmented view', role: 'group', data: { tut: 'hud-view' }, aria: { label: H.view } }, viewPhys, viewTopo),
         sound,
-        h('button', { class: 'icon-btn panel-toggle', type: 'button', aria: { label: 'Panneau' }, on: { click: () => this.side.classList.toggle('open') } }, '▤'),
+        h('button', { class: 'icon-btn panel-toggle', type: 'button', aria: { label: H.panel }, on: { click: () => this.side.classList.toggle('open') } }, '▤'),
       ),
     );
 
-    // --- Scène
-    this.canvas = h('canvas', { class: 'stage-canvas', tabindex: 0, aria: { label: 'Plan du réseau' } });
+    // --- Stage
+    this.canvas = h('canvas', { class: 'stage-canvas', tabindex: 0, aria: { label: H.map } });
     this.tooltip = h('div', { class: 'tooltip', hidden: true, role: 'status' });
     this.toastEl = h('div', { class: 'toast', hidden: true, role: 'status', aria: { live: 'polite' } });
     this.hint = h('div', { class: 'stage-hint' });
     this.stage = h('main', { class: 'stage' }, this.canvas, this.tooltip, this.toastEl, this.hint);
-    this.tools = h('aside', { class: 'tools', aria: { label: 'Outils' } });
+    this.tools = h('aside', { class: 'tools', aria: { label: H.tools } });
     this.sideBody = h('div', { class: 'side-body' });
     this.sideFoot = h('div', { class: 'side-foot-wrap' });
-    this.side = h('aside', { class: 'side', aria: { label: 'Panneau de mission' } }, this.sideBody, this.sideFoot);
+    this.side = h('aside', { class: 'side', aria: { label: H.missionPanel } }, this.sideBody, this.sideFoot);
 
     // --- Console
     const self = this;
@@ -340,22 +343,38 @@ export class GameScreen implements Screen {
     this.raf = requestAnimationFrame(this.frame);
 
     this.consoleView.print([
-      { text: `NetArchitect · session ouverte sur ${level.company}`, tone: 'head' },
-      { text: 'Tape « aide » pour la liste des commandes.', tone: 'dim' },
+      { text: T.game.sessionOpen(level.company), tone: 'head' },
+      { text: T.game.typeHelp, tone: 'dim' },
     ]);
 
+    if (level.tutorial?.length || level.coach?.length) {
+      this.coach = new Coach({
+        steps: level.tutorial ?? [],
+        tips: level.coach ?? [],
+        locate: (t) => this.locate(t),
+        onSkip: () => this.canvas.focus(),
+      });
+      this.el.append(this.coach.el);
+    }
+
+    const training = level.order === 0;
     requestAnimationFrame(() =>
-      showBriefing(
-        app.root,
-        level,
-        !!plan,
-        () => {
+      showBriefing(app.root, level, !!plan, {
+        start: () => {
           this.started = true;
           this.app.audio.setMode('build');
           this.canvas.focus();
+          this.coach?.update(this.guideState());
         },
-        () => this.app.go('campaign'),
-      ),
+        back: () => this.app.go('campaign'),
+        skip: training && this.app.save.training !== 'done'
+          ? () => {
+              if (!this.app.save.training) this.app.save.training = 'skipped';
+              this.app.persist();
+              this.app.go('campaign');
+            }
+          : undefined,
+      }),
     );
   }
 
@@ -370,15 +389,62 @@ export class GameScreen implements Screen {
   }
 
   // -------------------------------------------------------------------------
-  // État dérivé
+  // Derived state
 
   private guideState(): GuideState {
+    const sim = this.sim;
+    const t = this.tool;
+    let live: GuideState['live'] = null;
+    if (sim) {
+      const active = sim.incidents.filter((i) => i.resolved === undefined && i.end === undefined).map((i) => i.kind);
+      const resolved = sim.incidents.filter((i) => i.resolved !== undefined).map((i) => i.kind);
+      const states = [...sim.states.values()];
+      live = {
+        t: sim.t,
+        active,
+        resolved,
+        failed: states.filter((s) => s.down === 'failure').map((s) => s.node.id),
+        infected: states.filter((s) => s.infected && !s.quarantined).map((s) => s.node.id),
+        quarantined: states.filter((s) => s.quarantined).map((s) => s.node.id),
+        saturated: this.net.links.some((l) => sim.linkUtil(l.id) > 0.9),
+        hot: states.some((s) => s.up && s.heat > 0.73),
+        frustration: sim.frustration,
+      };
+    }
     return {
       phase: this.phase,
+      view: this.view,
       devices: this.design.devices,
       cables: this.design.cables,
-      running: !!this.sim,
+      tool: t.t,
+      toolKind: t.t === 'place' || t.t === 'cable' ? t.kind : undefined,
+      cableFrom: t.t === 'cable' ? t.from : undefined,
+      selected: this.selected.node,
+      cameraMoved: this.cameraMoved,
+      commands: this.commands,
+      config: this.config,
+      issues: this.issues.filter((i) => i.level !== 'info').length,
+      running: !!sim && !sim.finished,
+      finished: this.dayFinished,
+      paused: this.paused,
+      speed: this.speed,
+      live,
     };
+  }
+
+  /** Where a tutorial target is on screen, relative to the game element. */
+  private locate(target: GuideTarget): Rect | null {
+    const root = this.el.getBoundingClientRect();
+    if ('ui' in target) {
+      const el = this.el.querySelector<HTMLElement>(`[data-tut="${target.ui}"]`);
+      if (!el || !el.offsetParent) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left - root.left, y: r.top - root.top, w: r.width, h: r.height };
+    }
+    const c = this.canvas.getBoundingClientRect();
+    const r = 'node' in target ? this.renderer.nodeRect(target.node) : this.renderer.areaRect(target.area);
+    if (!r) return null;
+    return { x: r.x + c.left - root.left, y: r.y + c.top - root.top, w: r.w, h: r.h };
   }
 
   private onDesignChanged(persist = true): void {
@@ -420,6 +486,7 @@ export class GameScreen implements Screen {
       this.app.save.plans[this.level.id] = {
         design: cloneDesign(this.design),
         config: { ...cloneConfig(this.config), quarantine: [] },
+        at: Date.now(),
       };
       this.app.persist();
     }, 400);
@@ -434,7 +501,7 @@ export class GameScreen implements Screen {
   private undo(): void {
     if (this.phase === 'live') return;
     const prev = this.undoStack.pop();
-    if (!prev) return this.toast('Rien à annuler.');
+    if (!prev) return this.toast(T.game.nothingToUndo);
     this.redoStack.push(cloneDesign(this.design));
     this.design = prev;
     this.app.audio.sfx('remove');
@@ -451,7 +518,7 @@ export class GameScreen implements Screen {
   }
 
   // -------------------------------------------------------------------------
-  // Actions de conception
+  // Design actions
 
   private select(node?: string, link?: string): void {
     this.selected = { node, link };
@@ -462,7 +529,7 @@ export class GameScreen implements Screen {
 
   private setTool(tool: Tool): void {
     if (this.phase === 'live' && tool.t !== 'select') {
-      this.toast('La journée est lancée : arrête-la pour modifier le câblage.');
+      this.toast(T.game.dayRunning);
       return;
     }
     this.tool = tool;
@@ -502,10 +569,10 @@ export class GameScreen implements Screen {
     const ref = nodeRef(this.level, this.design, nodeId);
     if (!ref) return;
     if (!tool.from) {
-      if (ref.kind === 'laptop') return this.toast('Les portables se connectent en Wi-Fi : place une borne à portée.', 'crit');
+      if (ref.kind === 'laptop') return this.toast(T.design.laptopWifi, 'crit');
       if (portsUsed(this.design, nodeId) >= ref.ports) {
         this.app.audio.sfx('error');
-        return this.toast(`${ref.label} : plus de port libre.`, 'crit');
+        return this.toast(T.game.noFreePort(ref.label), 'crit');
       }
       tool.from = nodeId;
       this.app.audio.sfx('click');
@@ -521,8 +588,8 @@ export class GameScreen implements Screen {
     this.pushUndo();
     connect(this.level, this.design, tool.from, nodeId, tool.kind, this.skills);
     this.app.audio.sfx('cable');
-    // Le câblage continue depuis le dernier équipement relié (tracé en chemin : FAI → routeur → switch),
-    // ou depuis l'équipement de départ si l'arrivée est un poste (tracé en étoile : switch → postes).
+    // Cabling continues from the last device reached (a chain: ISP → router → switch), or from the
+    // starting device when the cable ended on a computer (a star: switch → computers).
     const free = (id: string) => {
       const r = nodeRef(this.level, this.design, id);
       return !!r && isEquipment(r.kind) && portsUsed(this.design, id) < r.ports;
@@ -536,12 +603,12 @@ export class GameScreen implements Screen {
     if (this.phase === 'live') return;
     if (node) {
       const dev = this.design.devices.find((d) => d.id === node);
-      if (!dev) return this.toast('Les postes, serveurs et l’arrivée FAI ne se suppriment pas.', 'crit');
+      if (!dev) return this.toast(T.game.cannotDelete, 'crit');
       this.pushUndo();
       removeDevice(this.design, node);
     } else if (link) {
       const l = this.net.linkById.get(link);
-      if (!l?.cableId) return this.toast('Une liaison Wi-Fi disparaît avec sa borne.', 'crit');
+      if (!l?.cableId) return this.toast(T.game.wifiLink, 'crit');
       this.pushUndo();
       removeCable(this.design, l.cableId);
     } else return;
@@ -555,15 +622,15 @@ export class GameScreen implements Screen {
     const n = autoCable(this.level, this.design, hub, this.skills);
     if (!n) {
       this.undoStack.pop();
-      return this.toast('Aucun poste non câblé à portée dans cette pièce (ou plus de port libre).', 'crit');
+      return this.toast(T.game.noAutoCable, 'crit');
     }
     this.app.audio.sfx('cable');
-    this.toast(`${n} poste(s) raccordé(s).`, 'ok');
+    this.toast(T.game.autoCabled(n), 'ok');
     this.onDesignChanged();
   }
 
   // -------------------------------------------------------------------------
-  // Phases et journée
+  // Phases and day
 
   private goPhase(p: Phase): void {
     if (p === this.phase) return;
@@ -590,19 +657,20 @@ export class GameScreen implements Screen {
     const warns = this.issues.filter((i) => i.level === 'warn');
     if (!warns.length) return this.startDay();
     openModal(this.app.root, {
-      eyebrow: 'Diagnostic',
-      title: 'Lancer malgré les avertissements ?',
+      eyebrow: T.game.launchEyebrow,
+      title: T.game.launchTitle,
       body: [
         h('ul', { class: 'issues' }, ...warns.slice(0, 6).map((w) => h('li', { class: 'issue warn' }, w.text))),
-        warns.length > 6 ? h('p', { class: 'muted' }, `… et ${warns.length - 6} autre(s).`) : '',
+        warns.length > 6 ? h('p', { class: 'muted' }, T.game.more(warns.length - 6)) : '',
       ],
-      actions: [{ label: 'Corriger d’abord' }, { label: 'Lancer quand même', kind: 'primary', onClick: () => this.startDay() }],
+      actions: [{ label: T.game.fixFirst }, { label: T.game.launchAnyway, kind: 'primary', onClick: () => this.startDay() }],
     });
   }
 
   private startDay(): void {
     this.config = { ...cloneConfig(this.config), quarantine: [] };
     this.sim = new Simulation(this.level, this.net, this.config, { skills: this.skills });
+    this.dayFinished = false;
     this.phase = 'live';
     this.paused = false;
     this.speed = 1;
@@ -614,7 +682,7 @@ export class GameScreen implements Screen {
     this.side.classList.remove('open');
     this.app.audio.setMode('live');
     this.app.audio.sfx('launch');
-    this.consoleView.print([{ text: `— ${this.level.company} · 09:00, début de la journée —`, tone: 'head' }]);
+    this.consoleView.print([{ text: T.game.dayStart(this.level.company), tone: 'head' }]);
     this.renderTools();
     this.renderSide();
     this.updateHud();
@@ -624,9 +692,9 @@ export class GameScreen implements Screen {
   private stop(): void {
     if (!this.sim) return;
     openModal(this.app.root, {
-      title: 'Arrêter la journée ?',
-      body: [h('p', null, 'Tu reviens à l’architecture avec ton plan intact. La journée en cours est perdue.')],
-      actions: [{ label: 'Continuer la journée' }, { label: 'Arrêter', kind: 'danger', onClick: () => this.endLive() }],
+      title: T.game.stopTitle,
+      body: [h('p', null, T.game.stopBody)],
+      actions: [{ label: T.game.keepPlaying }, { label: T.game.stop, kind: 'danger', onClick: () => this.endLive() }],
     });
   }
 
@@ -644,32 +712,53 @@ export class GameScreen implements Screen {
 
   private finishDay(): void {
     const sim = this.sim!;
-    const spent = designCost(this.level, this.design);
-    const result = evaluate(this.level, sim, spent);
+    const level = this.level;
+    const spent = designCost(level, this.design);
+    const result = evaluate(level, sim, spent);
+    const score = missionScore(level, result);
     const save = this.app.save;
-    const prevStars = save.stars[this.level.id] ?? 0;
+    const training = level.order === 0;
+    const prevStars = save.stars[level.id] ?? 0;
     const prevRank = currentRank(save);
-    if (result.stars > prevStars) save.stars[this.level.id] = result.stars;
+    const totalBefore = totalScore(save);
+    const previousBest = save.best[level.id]?.score ?? 0;
+    this.dayFinished = true;
+    if (result.stars > prevStars) save.stars[level.id] = result.stars;
+    let run: ReturnType<typeof recordRun> | null = null;
     if (result.success) {
-      const best = save.best[this.level.id];
-      if (!best || result.stars > best.stars || (result.stars === best.stars && spent < best.spent)) {
-        save.best[this.level.id] = { stars: result.stars, frustration: result.avgFrustration, spent };
+      if (training) save.training = 'done';
+      const best = save.best[level.id];
+      if (!best || score.total > best.score || (score.total === best.score && result.stars > best.stars)) {
+        run = training ? null : recordRun(level, this.design, sim);
+        save.best[level.id] = { stars: result.stars, score: score.total, frustration: result.avgFrustration, spent, run: run ?? undefined };
       }
     }
     this.app.persist();
     const rank = currentRank(save);
-    const idx = LEVELS.indexOf(this.level);
+    const idx = LEVELS.indexOf(level);
     const nextLevel = LEVELS[idx + 1];
     const next = nextLevel && isUnlocked(save, nextLevel) ? nextLevel : null;
+    const online = this.app.online;
+    const verification: Promise<RunResponse | null> | null = run && online.signedIn ? online.submitRun(run).catch(() => null) : null;
     this.app.audio.sfx(result.success ? 'success' : 'fail');
     this.app.audio.setMode('build');
     this.updateHud();
+    this.coach?.update(this.guideState());
     showDebrief(
       this.app.root,
-      this.level,
+      level,
       result,
       sim,
-      { gained: Math.max(0, result.stars - prevStars), rankUp: rank !== prevRank ? rank : null, next },
+      {
+        gained: CAMPAIGN.includes(level) ? Math.max(0, result.stars - prevStars) : 0,
+        rankUp: rank !== prevRank ? rank : null,
+        next,
+        score,
+        previousBest,
+        totalBefore,
+        totalAfter: totalScore(save),
+        verification,
+      },
       {
         replay: () => this.endLive(),
         next: () => next && this.app.startMission(next.id),
@@ -717,7 +806,9 @@ export class GameScreen implements Screen {
     this.updateHud();
   }
 
-  private afterCommand(_cmd: string, lines: Line[]): void {
+  private afterCommand(cmd: string, lines: Line[]): void {
+    this.commands.push({ cmd: cmd.trim().toLowerCase(), ok: !lines.some((l) => l.tone === 'err') });
+    if (this.commands.length > 60) this.commands.shift();
     this.recomputeIssues();
     this.renderSide();
     this.updateHud();
@@ -727,19 +818,22 @@ export class GameScreen implements Screen {
   }
 
   private openMenu(): void {
+    const G = T.game;
     openModal(this.app.root, {
-      eyebrow: `${this.level.company} · ${this.level.title}`,
-      title: 'Pause',
-      body: [h('p', { class: 'muted' }, 'Le temps est suspendu tant que ce menu est ouvert.')],
+      eyebrow: `${this.level.company} · ${loc(this.level.title)}`,
+      title: G.pauseTitle,
+      body: [h('p', { class: 'muted' }, G.pauseBody)],
       actions: [
         {
-          label: 'Aide',
+          label: T.common.help,
           onClick: () => {
-            window.setTimeout(() => openModal(this.app.root, { eyebrow: 'Guide', title: 'Comment jouer', body: helpBody(), actions: [{ label: 'Compris', kind: 'primary' }], wide: true }));
+            window.setTimeout(() =>
+              openModal(this.app.root, { eyebrow: T.title.guide, title: T.title.howTo, body: helpBody(), actions: [{ label: T.common.gotIt, kind: 'primary' }], wide: true }),
+            );
           },
         },
         {
-          label: 'Effacer le plan',
+          label: G.clearPlan,
           kind: 'danger',
           onClick: () => {
             this.pushUndo();
@@ -747,11 +841,11 @@ export class GameScreen implements Screen {
             this.config = defaultConfig(this.level);
             if (this.sim) this.endLive();
             this.onDesignChanged();
-            this.toast('Plan effacé (Ctrl + Z pour annuler).');
+            this.toast(G.planCleared);
           },
         },
-        { label: 'Quitter vers la carrière', onClick: () => this.app.go('campaign') },
-        { label: 'Reprendre', kind: 'primary' },
+        { label: G.quit, onClick: () => this.app.go('campaign') },
+        { label: G.resume, kind: 'primary' },
       ],
     });
   }
@@ -770,15 +864,14 @@ export class GameScreen implements Screen {
   private updateHint(): void {
     let text = '';
     const t = this.tool;
-    if (this.phase === 'live') text = 'Survole un paquet pour lire son en-tête · clique un équipement pour agir · Espace : pause · Tab : vue';
-    else if (t.t === 'place') text = `${DEVICES[t.kind].name} : clique sur une case libre (Échap pour arrêter)`;
+    const H = T.hints;
+    if (this.phase === 'live') text = H.live;
+    else if (t.t === 'place') text = H.place(DEVICES[t.kind].name);
     else if (t.t === 'cable')
-      text = t.from
-        ? `${CABLES[t.kind].short} depuis ${nodeRef(this.level, this.design, t.from)?.label} : clique la destination · le tracé continue depuis le dernier équipement (Échap pour arrêter)`
-        : `${CABLES[t.kind].short} : clique sur le premier équipement`;
-    else if (t.t === 'delete') text = 'Suppression : clique un équipement ou un câble';
-    else if (this.phase === 'config') text = 'Configure à droite ou dans la console · Tab : plan physique';
-    else text = 'Choisis un équipement à gauche (touches 1–8) · glisse un équipement pour le déplacer · Tab : topologie';
+      text = t.from ? H.cableFrom(CABLES[t.kind].short, nodeRef(this.level, this.design, t.from)?.label ?? '') : H.cableStart(CABLES[t.kind].short);
+    else if (t.t === 'delete') text = H.remove;
+    else if (this.phase === 'config') text = H.config;
+    else text = H.build;
     this.hint.textContent = text;
   }
 
@@ -790,13 +883,13 @@ export class GameScreen implements Screen {
     }
     const cost = designCost(this.level, this.design);
     if (this.sim) {
-      H.budgetLabel.textContent = 'Dépensé';
+      H.budgetLabel.textContent = T.hud.spent;
       H.budget.textContent = euros(cost);
       H.budgetSub.textContent = ` / ${euros(this.level.budget)}`;
       H.budgetBox.classList.remove('over');
     } else {
       const left = this.level.budget - cost;
-      H.budgetLabel.textContent = 'Budget restant';
+      H.budgetLabel.textContent = T.hud.budgetLeft;
       H.budget.textContent = euros(left);
       H.budgetSub.textContent = ` / ${euros(this.level.budget)}`;
       H.budgetBox.classList.toggle('over', left < 0);
@@ -805,7 +898,7 @@ export class GameScreen implements Screen {
     H.clock.textContent = sim ? sim.clock : '09:00';
     const f = sim ? sim.frustration : 0;
     H.frustBar.style.width = `${Math.min(100, f)}%`;
-    H.frustVal.textContent = `${Math.round(f)} %`;
+    H.frustVal.textContent = pctN(f);
     H.frustBox.dataset.level = f > 70 ? 'crit' : f > 35 ? 'warn' : 'ok';
     H.frustBox.setAttribute('aria-valuenow', String(Math.round(f)));
     const audits = !!this.level.audits?.length;
@@ -814,12 +907,12 @@ export class GameScreen implements Screen {
     if (sim) {
       const active = sim.incidents.filter((i) => i.resolved === undefined && i.end === undefined).length;
       const parts: string[] = [];
-      if (audits) parts.push(`${sim.stats.breaches} brèche${sim.stats.breaches > 1 ? 's' : ''}`);
-      if (active) parts.push(`${active} incident${active > 1 ? 's' : ''}`);
-      H.security.textContent = parts.join(' · ') || 'RAS';
+      if (audits) parts.push(T.hud.breaches(sim.stats.breaches));
+      if (active) parts.push(T.hud.incidents(active));
+      H.security.textContent = parts.join(' · ') || T.hud.allClear;
       H.securityBox.dataset.level = sim.stats.breaches || active ? 'crit' : 'ok';
     } else {
-      H.security.textContent = audits ? 'Audit prévu' : 'Crises prévues';
+      H.security.textContent = audits ? T.hud.auditPlanned : T.hud.crisesExpected;
       H.securityBox.dataset.level = '';
     }
     H.speedBox.hidden = !sim;
@@ -827,8 +920,8 @@ export class GameScreen implements Screen {
     for (const [s, b] of H.speedBtns) b.classList.toggle('active', !this.paused && s === this.speed);
     H.viewPhys.classList.toggle('active', this.view === 'phys');
     H.viewTopo.classList.toggle('active', this.view === 'topo');
-    H.sound.textContent = this.app.save.muted ? '🔇' : '🔊';
-    H.sound.setAttribute('aria-label', this.app.save.muted ? 'Activer le son' : 'Couper le son');
+    H.sound.textContent = this.app.settings.muted ? '🔇' : '🔊';
+    H.sound.setAttribute('aria-label', this.app.settings.muted ? T.sound.unmute : T.sound.mute);
     H.sound.title = H.sound.getAttribute('aria-label')!;
   }
 
@@ -838,6 +931,7 @@ export class GameScreen implements Screen {
     const topo = this.view === 'topo';
     const toolBtn = (opts: {
       label: string;
+      tut?: string;
       meta?: string;
       key?: string;
       icon?: Node;
@@ -853,6 +947,7 @@ export class GameScreen implements Screen {
           type: 'button',
           disabled: opts.disabled,
           title: opts.title ?? '',
+          data: opts.tut ? { tut: opts.tut } : undefined,
           aria: { pressed: String(opts.active) },
           on: { click: opts.onClick },
         },
@@ -865,13 +960,14 @@ export class GameScreen implements Screen {
       const owned = kit.equipment.has(k);
       const t = this.tool;
       return toolBtn({
-        label: SHORT[k],
-        meta: owned ? euros(DEVICES[k].cost) : 'Verrouillé',
+        label: DEVICES[k].short,
+        tut: `tool-${k}`,
+        meta: owned ? euros(DEVICES[k].cost) : T.tools.locked,
         key: String(EQUIPMENT_ORDER.indexOf(k) + 1),
         icon: P.glyphIcon(k, 30),
         active: t.t === 'place' && t.kind === k,
         disabled: live || topo || !owned,
-        title: owned ? DEVICES[k].desc : `Débloque « ${DEVICES[k].name} » dans l’arbre de compétences.`,
+        title: owned ? DEVICES[k].desc : T.tools.unlockIn(DEVICES[k].name),
         onClick: () => this.setTool({ t: 'place', kind: k }),
       });
     });
@@ -880,15 +976,16 @@ export class GameScreen implements Screen {
       const t = this.tool;
       const swatch = h('span', { class: `cable-swatch ${k}`, aria: { hidden: 'true' } });
       return toolBtn({
-        label: k === 'rj45' ? 'RJ45' : 'Fibre',
-        meta: owned ? CABLES[k].short.split(' · ')[1] : 'Verrouillé',
+        label: CABLES[k].tool,
+        tut: `tool-${k}`,
+        meta: owned ? CABLES[k].short.split(' · ')[1] : T.tools.locked,
         key: String(7 + i),
         icon: swatch,
         active: t.t === 'cable' && t.kind === k,
         disabled: live || !owned,
         title: owned
-          ? `${CABLES[k].name} : ${CABLES[k].base} € + ${CABLES[k].perCell} € par 5 m, ${meters(CABLES[k].maxLen)} maximum`
-          : 'Débloque la fibre dans l’arbre de compétences.',
+          ? T.tools.cableTitle(CABLES[k].name, euros(CABLES[k].base), euros(CABLES[k].perCell), meters(CABLES[k].maxLen))
+          : T.tools.fiberLocked,
         onClick: () => this.setTool({ t: 'cable', kind: k }),
       });
     });
@@ -900,16 +997,17 @@ export class GameScreen implements Screen {
         .filter((k) => k !== 'probe' || this.level.audits?.length)
         .map((k) => h('li', null, h('i', { class: 'dot', style: `--c:${TRAFFIC[k].color}` }), TRAFFIC[k].label)),
     );
+    const TT = T.tools;
     this.tools.replaceChildren(
-      h('p', { class: 'tools-title' }, 'Matériel'),
+      h('p', { class: 'tools-title' }, TT.hardware),
       ...equipment,
-      h('p', { class: 'tools-title' }, 'Câbles'),
+      h('p', { class: 'tools-title' }, TT.cables),
       ...cables,
-      h('p', { class: 'tools-title' }, 'Outils'),
-      toolBtn({ label: 'Sélection', key: 'Échap', active: this.tool.t === 'select', onClick: () => this.setTool({ t: 'select' }) }),
-      toolBtn({ label: 'Supprimer', key: 'X', active: this.tool.t === 'delete', disabled: live, onClick: () => this.setTool({ t: 'delete' }) }),
-      toolBtn({ label: 'Annuler', key: 'Ctrl Z', active: false, disabled: live, onClick: () => this.undo() }),
-      h('p', { class: 'tools-title' }, 'Trafic'),
+      h('p', { class: 'tools-title' }, TT.tools),
+      toolBtn({ label: TT.select, tut: 'tool-select', key: TT.selectKey, active: this.tool.t === 'select', onClick: () => this.setTool({ t: 'select' }) }),
+      toolBtn({ label: TT.remove, tut: 'tool-delete', key: 'X', active: this.tool.t === 'delete', disabled: live, onClick: () => this.setTool({ t: 'delete' }) }),
+      toolBtn({ label: TT.undo, key: 'Ctrl Z', active: false, disabled: live, onClick: () => this.undo() }),
+      h('p', { class: 'tools-title' }, TT.traffic),
       legend,
     );
   }
@@ -946,6 +1044,7 @@ export class GameScreen implements Screen {
     const sim = this.sim;
     this.updateHud();
     for (const c of this.cards) c.update?.();
+    if (this.started) this.coach?.update(this.guideState());
     if (!sim) return;
     if (sim.configVersion !== this.cfgSeen) {
       this.cfgSeen = sim.configVersion;
@@ -974,7 +1073,7 @@ export class GameScreen implements Screen {
   }
 
   // -------------------------------------------------------------------------
-  // Boucle
+  // Loop
 
   private frame = (ts: number): void => {
     if (this.destroyed) return;
@@ -989,7 +1088,7 @@ export class GameScreen implements Screen {
       this.morph = target > this.morph ? Math.min(target, this.morph + k) : Math.max(target, this.morph - k);
     }
     const sim = this.sim;
-    if (sim && !sim.finished && !this.paused && !modalOpen()) {
+    if (sim && !sim.finished && !this.paused && !modalOpen() && !this.coach?.pausing) {
       this.acc += dt * this.speed;
       let steps = 0;
       while (this.acc >= STEP && steps < 20 && !sim.finished) {
@@ -1026,6 +1125,7 @@ export class GameScreen implements Screen {
       roomGroups: this.roomGroups,
       reducedMotion: this.reduced,
     });
+    this.coach?.frame();
     if (now - this.lastUi > 0.2) {
       this.lastUi = now;
       this.tickUi();
@@ -1042,7 +1142,7 @@ export class GameScreen implements Screen {
   }
 
   // -------------------------------------------------------------------------
-  // Souris, tactile, clavier
+  // Mouse, touch, keyboard
 
   private local(e: PointerEvent | WheelEvent): Vec {
     const r = this.canvas.getBoundingClientRect();
@@ -1087,7 +1187,7 @@ export class GameScreen implements Screen {
               to: world,
               ok: !tooLong,
               kind: t.kind,
-              label: tooLong ? `${meters(len)} : trop long` : `${meters(len)} · choisis la destination`,
+              label: tooLong ? T.game.tooLong(meters(len)) : T.game.pickDestination(meters(len)),
             };
           }
         }
@@ -1102,17 +1202,17 @@ export class GameScreen implements Screen {
     if (sim) {
       const pk = node ? undefined : this.renderer.pickPacket(this.pointer.x, this.pointer.y);
       if (pk) {
-        text = `${TRAFFIC[pk.kind].label}${pk.response ? ' (réponse)' : ''} · ${pk.proto.toUpperCase()}/${pk.port}\n${sim.ipLabel(pk.src, pk.srcIp)} → ${sim.ipLabel(pk.dst, pk.dstIp)}`;
+        text = `${TRAFFIC[pk.kind].label}${pk.response ? T.game.reply : ''} · ${pk.proto.toUpperCase()}/${pk.port}\n${sim.ipLabel(pk.src, pk.srcIp)} → ${sim.ipLabel(pk.dst, pk.dstIp)}`;
       } else if (node) {
         const st = sim.states.get(node);
         if (st) {
-          const extra = st.node.transit || st.node.kind === 'server' ? ` · ${Math.round(Math.min(1, st.load) * 100)} %` : '';
+          const extra = st.node.transit || st.node.kind === 'server' ? ` · ${pctN(Math.min(1, st.load) * 100)}` : '';
           text = `${st.node.label}${extra}`;
         }
       }
     } else if (node) {
       const n = this.net.byId.get(node);
-      if (n) text = n.ports ? `${n.label} · ${portsUsed(this.design, n.id)}/${n.ports} ports` : n.label;
+      if (n) text = n.ports ? T.game.ports(n.label, portsUsed(this.design, n.id), n.ports) : n.label;
     }
     if (!text) {
       this.tooltip.hidden = true;
@@ -1131,7 +1231,7 @@ export class GameScreen implements Screen {
     try {
       this.canvas.setPointerCapture(e.pointerId);
     } catch {
-      // Certains navigateurs refusent la capture : sans gravité.
+      // Some browsers refuse pointer capture: harmless.
     }
     const p = this.local(e);
     this.pointer = { ...p, inside: true };
@@ -1162,7 +1262,7 @@ export class GameScreen implements Screen {
       } else if (link) this.select(undefined, link);
       else this.panning = { ...p, moved: false };
     } else if (t.t === 'place') {
-      if (this.morph >= 0.5) this.toast('Passe en vue plan (Tab) pour poser du matériel.');
+      if (this.morph >= 0.5) this.toast(T.game.placeOnPlan);
       else this.placeAt(this.renderer.cellAt(p.x, p.y));
     } else if (t.t === 'cable') {
       if (node) this.cableClick(node);
@@ -1185,6 +1285,7 @@ export class GameScreen implements Screen {
         const d = Math.hypot(a.x - b.x, a.y - b.y);
         this.renderer.camera.zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / this.pinch);
         this.pinch = d;
+        this.cameraMoved = true;
         return;
       }
     }
@@ -1192,6 +1293,7 @@ export class GameScreen implements Screen {
       const dx = p.x - this.panning.x;
       const dy = p.y - this.panning.y;
       if (Math.abs(dx) + Math.abs(dy) > 0) this.renderer.camera.pan(dx, dy);
+      if (Math.abs(dx) + Math.abs(dy) > 2) this.cameraMoved = true;
       this.panning = { x: p.x, y: p.y, moved: this.panning.moved || Math.abs(dx) + Math.abs(dy) > 2 };
       return;
     }
@@ -1235,6 +1337,7 @@ export class GameScreen implements Screen {
     e.preventDefault();
     const p = this.local(e);
     this.renderer.camera.zoomAt(p.x, p.y, Math.exp(-e.deltaY * 0.0015));
+    this.cameraMoved = true;
   };
 
   private onKey = (e: KeyboardEvent): void => {
@@ -1259,7 +1362,7 @@ export class GameScreen implements Screen {
       return;
     }
     if (mod || e.altKey) return;
-    // Tab et Espace gardent leur rôle d'accessibilité quand un contrôle a le focus.
+    // Tab and Space keep their accessibility role when a control has the focus.
     const onControl = !!target && target !== document.body && target !== this.canvas;
     if ((e.key === 'Tab' || e.key === ' ' || e.key === 'Enter') && onControl) return;
     const digit = /^(?:Digit|Numpad)([1-8])$/.exec(e.code);
@@ -1294,6 +1397,7 @@ export class GameScreen implements Screen {
       case 'f':
       case 'F':
         this.renderer.fit(this.level);
+        this.cameraMoved = true;
         break;
       case '+':
       case '=':
@@ -1310,12 +1414,12 @@ export class GameScreen implements Screen {
     const kit = availableKit(this.level, this.skills);
     if (n <= 6) {
       const kind = EQUIPMENT_ORDER[n - 1];
-      if (!kit.equipment.has(kind)) return this.toast(`${DEVICES[kind].name} : indisponible dans cette mission.`);
+      if (!kit.equipment.has(kind)) return this.toast(T.game.unavailable(DEVICES[kind].name));
       if (this.view === 'topo') this.setView('phys');
       return this.setTool({ t: 'place', kind });
     }
     const cable: CableKind = n === 7 ? 'rj45' : 'fiber';
-    if (!kit.cables.has(cable)) return this.toast('Fibre : débloque-la dans l’arbre de compétences.');
+    if (!kit.cables.has(cable)) return this.toast(T.game.fiberLocked);
     this.setTool({ t: 'cable', kind: cable });
   }
 }

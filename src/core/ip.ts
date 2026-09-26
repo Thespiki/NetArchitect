@@ -1,4 +1,4 @@
-// Outils IPv4 / CIDR (entiers non signés 32 bits).
+// IPv4 / CIDR helpers (unsigned 32-bit integers).
 
 export interface Cidr {
   base: number;
@@ -39,7 +39,7 @@ export function formatCidr(c: Cidr): string {
   return `${formatIp(c.base)}/${c.prefix}`;
 }
 
-/** L'adresse de base n'a aucun bit d'hôte à 1. */
+/** The base address has no host bit set. */
 export function isAligned(c: Cidr): boolean {
   return ((c.base & ~maskOf(c.prefix)) >>> 0) === 0;
 }
@@ -52,7 +52,7 @@ export function blockSize(prefix: number): number {
   return 2 ** (32 - prefix);
 }
 
-/** Nombre d'adresses utilisables (réseau et broadcast exclus). */
+/** Number of usable addresses (network and broadcast excluded). */
 export function usableHosts(prefix: number): number {
   if (prefix >= 32) return 1;
   if (prefix === 31) return 2;
@@ -70,12 +70,12 @@ export function overlaps(a: Cidr, b: Cidr): boolean {
   return ((a.base & m) >>> 0) === ((b.base & m) >>> 0);
 }
 
-/** `inner` est entièrement inclus dans `outer`. */
+/** `inner` lies entirely within `outer`. */
 export function within(inner: Cidr, outer: Cidr): boolean {
   return inner.prefix >= outer.prefix && contains(outer, inner.base);
 }
 
-/** Plus petit préfixe dont le bloc loge `hosts` adresses utilisables. */
+/** Smallest prefix whose block holds `hosts` usable addresses. */
 export function prefixFor(hosts: number): number {
   for (let p = 30; p >= 0; p--) {
     if (usableHosts(p) >= hosts) return p;

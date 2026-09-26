@@ -1,7 +1,8 @@
-// Graphe réseau dérivé du niveau (postes fixes) et de la conception du joueur (matériel, câbles, Wi-Fi).
+// Network graph built from the level (fixed endpoints) and the player's design (hardware, cables, Wi-Fi).
 
 import { CABLES, DEVICES, INTERNET_DEFAULTS, ROOM_COOLING, SERVER_DEFAULTS, WIFI_LINK } from './catalog.ts';
 import { brokenCables, cableLength, deviceLabel, endpointLabel, type Design } from './design.ts';
+import { cmp, dist } from './detmath.ts';
 import { roomAt, type LevelDef, type RoomKind } from './level.ts';
 import type { LinkKind, NodeKind, Proto, Vec } from './types.ts';
 
@@ -9,7 +10,7 @@ export interface NetNode {
   id: string;
   kind: NodeKind;
   label: string;
-  /** Centre de la case, en unités de grille. */
+  /** Center of the cell, in grid units. */
   x: number;
   y: number;
   cell: Vec;
@@ -23,7 +24,7 @@ export interface NetNode {
   queueMax: number;
   l3: boolean;
   nat: boolean;
-  /** Peut relayer des paquets (équipement actif). */
+  /** Can relay packets (active device). */
   transit: boolean;
   endpoint: boolean;
   heat: number;
@@ -43,7 +44,7 @@ export interface NetLink {
   speed: number;
   broken: boolean;
   cableId?: string;
-  /** Rang parmi les liens parallèles entre les deux mêmes nœuds (décalage au rendu). */
+  /** Rank among parallel links between the same two nodes (offset when drawing). */
   index: number;
   parallel: number;
 }
@@ -131,7 +132,7 @@ export function buildNetwork(level: LevelDef, design: Design): Network {
     const b = byId.get(c.b);
     if (!a || !b) continue;
     const spec = CABLES[c.kind];
-    // Le lien vers la box opérateur est limité par l'abonnement, pas par le cordon.
+    // The link to the ISP box is limited by the subscription, not by the patch cord.
     let capacity = spec.capacity;
     for (const n of [a, b]) if (n.isp !== undefined) capacity = n.isp;
     links.push({
@@ -149,17 +150,17 @@ export function buildNetwork(level: LevelDef, design: Design): Network {
     });
   }
 
-  // Association Wi-Fi : chaque portable rejoint la borne la plus proche qui a encore de la place.
+  // Wi-Fi association: each laptop joins the nearest access point that still has room.
   const wifiClients = new Map<string, string[]>();
   const aps = nodes.filter((n) => n.wifi);
   for (const ap of aps) wifiClients.set(ap.id, []);
   const uncovered: string[] = [];
-  const laptops = nodes.filter((n) => n.kind === 'laptop').sort((p, q) => p.id.localeCompare(q.id));
+  const laptops = nodes.filter((n) => n.kind === 'laptop').sort((p, q) => cmp(p.id, q.id));
   for (const lap of laptops) {
     const options = aps
-      .map((ap) => ({ ap, d: Math.hypot(ap.x - lap.x, ap.y - lap.y) }))
+      .map((ap) => ({ ap, d: dist(ap.x - lap.x, ap.y - lap.y) }))
       .filter((o) => o.d <= o.ap.wifi!.radius)
-      .sort((p, q) => p.d - q.d || p.ap.id.localeCompare(q.ap.id));
+      .sort((p, q) => p.d - q.d || cmp(p.ap.id, q.ap.id));
     const choice = options.find((o) => wifiClients.get(o.ap.id)!.length < o.ap.wifi!.clients);
     if (!choice) {
       uncovered.push(lap.id);
@@ -180,7 +181,7 @@ export function buildNetwork(level: LevelDef, design: Design): Network {
     });
   }
 
-  // Liens parallèles (agrégation) : rang et nombre pour le rendu.
+  // Parallel links (aggregation): rank and count for drawing.
   const pairs = new Map<string, NetLink[]>();
   for (const l of links) {
     const key = l.a < l.b ? `${l.a}|${l.b}` : `${l.b}|${l.a}`;

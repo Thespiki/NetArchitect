@@ -1,4 +1,4 @@
-// Fenêtres modales intégrées à la page (pas de alert/confirm natifs).
+// In-page modal dialogs (no native alert/confirm).
 
 import { h } from './dom.ts';
 

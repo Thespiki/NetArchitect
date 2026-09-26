@@ -11,9 +11,9 @@ import { buildSolution, SOLUTIONS } from './solutions.ts';
 
 const none = new Set<SkillId>();
 
-describe('campagne', () => {
+describe('campaign', () => {
   for (const level of LEVELS) {
-    it(`${level.order}. ${level.company} se gagne avec la solution de référence, sans compétence`, () => {
+    it(`${level.order}. ${level.company} is won with the reference solution, without skills`, () => {
       const sol = SOLUTIONS[level.id](level);
       const built = buildSolution(level, sol);
       expect(built.errors).toEqual([]);
@@ -23,7 +23,7 @@ describe('campagne', () => {
       expect(result.stars).toBeGreaterThanOrEqual(2);
     });
 
-    it(`${level.order}. ${level.company} est perdue avec une conception vide`, () => {
+    it(`${level.order}. ${level.company} is lost with an empty design`, () => {
       const { result, sim } = playDay(level, emptyDesign(), defaultConfig(level));
       expect(result.success).toBe(false);
       expect(sim.failed).toBe(true);
@@ -32,7 +32,7 @@ describe('campagne', () => {
 });
 
 describe('simulation', () => {
-  it('est déterministe à graine égale', () => {
+  it('is deterministic for a given seed', () => {
     const level = levelById('kiwi')!;
     const built = buildSolution(level, SOLUTIONS.kiwi(level));
     const a = playDay(level, built.design, built.config).sim.stats;
@@ -40,17 +40,17 @@ describe('simulation', () => {
     expect(a).toEqual(b);
   });
 
-  it('un réseau à plat laisse passer les sondes malgré le pare-feu', () => {
+  it('a flat network lets the probes through despite the firewall', () => {
     const level = levelById('bionova')!;
     const sol = SOLUTIONS.bionova(level);
-    const flat = { ...sol, configure: ['subnet 1 10.42.0.0/27', 'fw deny compta labdata', 'fw deny rnd erp'] };
+    const flat = { ...sol, configure: ['subnet 1 10.42.0.0/27', 'fw deny acct labdata', 'fw deny rnd erp'] };
     const built = buildSolution(level, flat);
     const { result, sim } = playDay(level, built.design, built.config);
     expect(sim.stats.breaches).toBeGreaterThan(0);
     expect(result.success).toBe(false);
   });
 
-  it('sans répartition de charge, le Black Friday submerge le premier serveur', () => {
+  it('without load balancing, Black Friday overwhelms the first server', () => {
     const level = levelById('shopnow')!;
     const sol = SOLUTIONS.shopnow(level);
     const built = buildSolution(level, { ...sol, configure: [] });
@@ -58,7 +58,7 @@ describe('simulation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('bloquer le port de l’attaque neutralise le DDoS', () => {
+  it('blocking the attack port stops the DDoS', () => {
     const level = levelById('shopnow')!;
     const sol = SOLUTIONS.shopnow(level);
     const built = buildSolution(level, sol);
@@ -69,7 +69,7 @@ describe('simulation', () => {
     expect(sim.stats.attackBlocked).toBeGreaterThan(sim.stats.attackPackets * 0.8);
   });
 
-  it('le script d’auto-mitigation pose la règle tout seul', () => {
+  it('the auto-mitigation script adds the rule by itself', () => {
     const level = levelById('shopnow')!;
     const sol = SOLUTIONS.shopnow(level);
     const built = buildSolution(level, sol);
@@ -79,7 +79,7 @@ describe('simulation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('un switch en panne se répare seulement avec un technicien', () => {
+  it('a failed switch is only repaired by a technician', () => {
     const level = levelById('helios')!;
     const built = buildSolution(level, SOLUTIONS.helios(level));
     const sim = new Simulation(level, buildNetwork(level, built.design), built.config);
@@ -96,7 +96,7 @@ describe('simulation', () => {
     expect(inc.resolved).toBeDefined();
   });
 
-  it('un équipement saturé surchauffe dans un bureau, pas en salle serveurs', () => {
+  it('a saturated device overheats in an office, not in the server room', () => {
     const run = (x: number, y: number) => {
       const level = miniLevel({
         traffic: { groups: { ga: { rate: 25, mix: { web: 1 } } }, curve: 'office' },

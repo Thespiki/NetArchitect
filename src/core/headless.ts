@@ -1,4 +1,4 @@
-// Exécution d'une journée complète sans rendu : tests, équilibrage et démonstrations.
+// Runs a full day without rendering: tests, balancing and demos.
 
 import { cloneConfig, type NetConfig } from './config.ts';
 import { execute, type ConsoleHost, type Line } from './console.ts';
@@ -11,11 +11,11 @@ import { Simulation, STEP } from './simulation.ts';
 import type { SkillId } from './types.ts';
 
 export interface ScriptStep {
-  /** Instant en secondes de simulation. */
+  /** Time in simulation seconds. */
   at: number;
   cmd?: string;
   run?: (sim: Simulation, exec: (cmd: string) => Line[]) => void;
-  /** Répète l'étape toutes les `every` secondes jusqu'à la fin de la journée. */
+  /** Repeats the step every `every` seconds until the end of the day. */
   every?: number;
 }
 

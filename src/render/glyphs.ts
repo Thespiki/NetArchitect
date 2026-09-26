@@ -1,4 +1,4 @@
-// Pictogrammes vectoriels des équipements, dessinés au canvas (s = pixels par case).
+// Vector glyphs of the equipment, drawn on the canvas (s = pixels per cell).
 
 import type { NodeKind } from '../core/types.ts';
 
@@ -53,7 +53,7 @@ export interface GlyphStyle {
   alpha?: number;
 }
 
-/** Rayon de sélection approximatif (en cases) de chaque pictogramme. */
+/** Approximate picking radius (in cells) of each glyph. */
 export function glyphRadius(kind: NodeKind): number {
   switch (kind) {
     case 'internet':
@@ -190,7 +190,7 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, kind: NodeKind, x: numb
         ctx.arc(x, y, r - s * 0.08, 0, Math.PI * 2);
         ctx.stroke();
       }
-      // Quatre flèches, deux entrantes et deux sortantes : le symbole classique du routeur.
+      // Four arrows, two in and two out: the classic router symbol.
       const inner = r * 0.14;
       const outer = r * 0.62;
       const head = r * 0.2;
@@ -220,7 +220,7 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, kind: NodeKind, x: numb
   ctx.restore();
 }
 
-/** Sprite lumineux pré-rendu pour une couleur (dessiné en mode additif). */
+/** Pre-rendered glow sprite for a color (drawn in additive mode). */
 export function glowSprite(color: string, size = 48): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = size;
@@ -249,7 +249,7 @@ export function mix(a: string, b: string, t: number): string {
   return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
 }
 
-/** Vert → ambre → rouge selon une charge 0..1. */
+/** Green → amber → red for a load in 0..1. */
 export function loadColor(load: number): string {
   if (load < 0.6) return PAL.ok;
   if (load < 0.85) return mix(PAL.ok, PAL.warn, (load - 0.6) / 0.25);

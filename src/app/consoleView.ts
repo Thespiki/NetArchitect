@@ -1,7 +1,8 @@
-// Console façon terminal : journal des événements + saisie de commandes, historique et complétion.
+// Terminal-style console: event log + command input, history and completion.
 
 import { commandNames, execute, type ConsoleHost, type Line } from '../core/console.ts';
 import type { LogEntry } from '../core/simulation.ts';
+import { T } from '../i18n/index.ts';
 import { h } from './dom.ts';
 
 export class ConsoleView {
@@ -25,10 +26,10 @@ export class ConsoleView {
       type: 'text',
       autocomplete: 'off',
       spellcheck: 'false',
-      placeholder: 'aide · ping compta internet · top · block udp 123',
-      aria: { label: 'Commande console' },
+      placeholder: T.consoleView.placeholder,
+      aria: { label: T.consoleView.aria },
     });
-    const toggle = h('button', { class: 'console-toggle', type: 'button', aria: { expanded: String(!collapsed) } }, 'Console');
+    const toggle = h('button', { class: 'console-toggle', type: 'button', aria: { expanded: String(!collapsed) } }, T.consoleView.toggle);
     toggle.addEventListener('click', () => this.setCollapsed(!this.collapsed));
     const form = h('form', { class: 'console-form' }, h('label', { class: 'prompt', for: 'console-input' }, prompt), this.input);
     form.addEventListener('submit', (e) => {
@@ -39,8 +40,8 @@ export class ConsoleView {
     this.input.addEventListener('keydown', (e) => this.onKey(e));
     this.el = h(
       'section',
-      { class: `console ${collapsed ? 'collapsed' : ''}`, aria: { label: 'Console' } },
-      h('div', { class: 'console-bar' }, toggle, h('span', { class: 'console-hint' }, 'Touche ² ou ` pour saisir une commande')),
+      { class: `console ${collapsed ? 'collapsed' : ''}`, aria: { label: T.consoleView.toggle }, data: { tut: 'console' } },
+      h('div', { class: 'console-bar' }, toggle, h('span', { class: 'console-hint' }, T.consoleView.hint)),
       h('div', { class: 'console-body' }, this.out, form),
     );
     this.toggleBtn = toggle;

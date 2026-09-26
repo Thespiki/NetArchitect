@@ -1,5 +1,5 @@
-// Vue topologique : arbre enraciné sur Internet, ordonné comme le plan physique (gauche → droite)
-// pour que le morphing entre les deux vues reste lisible.
+// Topology view: a tree rooted at the Internet, ordered like the floor plan (left → right) so that
+// the morph between the two views stays readable.
 
 import { otherEnd, type Network } from '../core/network.ts';
 import type { Vec } from '../core/types.ts';
@@ -27,7 +27,7 @@ export function topologyLayout(net: Network, size: { w: number; h: number }): Ma
     [...new Set((net.adj.get(id) ?? []).map((l) => otherEnd(l, id)))].sort(byX);
 
   const build = (rootId: string): TreeNode => {
-    // Parcours en largeur : chaque nœud est rattaché au premier parent qui le découvre.
+    // Breadth-first search: each node hangs from the first parent that discovers it.
     const root: TreeNode = { id: rootId, children: [], leaves: [], width: 1, depth: 1 };
     visited.add(rootId);
     const queue: TreeNode[] = [root];

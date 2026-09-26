@@ -1,6 +1,6 @@
-// Diagnostics hors simulation : vérifications avant lancement, ping et traceroute.
+// Diagnostics outside the simulation: pre-launch checks, ping and traceroute.
 
-import { euros } from './catalog.ts';
+import { allForms, loc, T } from '../i18n/index.ts';
 import {
   compileRules,
   computeAddressing,
@@ -21,6 +21,8 @@ import type { Proto } from './types.ts';
 
 export interface Issue {
   level: 'error' | 'warn' | 'info';
+  /** Kind of problem, used by the guides. */
+  code: 'budget' | 'broken' | 'isp' | 'uncabled' | 'wifi' | 'vlan' | 'access' | 'site' | 'audit';
   text: string;
   nodes?: string[];
 }
@@ -29,16 +31,17 @@ export type Service = { proto: Proto | 'icmp'; port: number };
 
 export const ICMP: Service = { proto: 'icmp', port: 0 };
 
-/** Accepte un identifiant de poste, « internet », un groupe (premier poste) ou un pool (premier serveur). */
+/** Accepts a host id or label, "internet", a group (first host) or a pool (first server). */
 export function resolveHost(level: LevelDef, token: string): string | null {
   const t = token.trim().toLowerCase();
   if (!t) return null;
-  const direct = level.endpoints.find((e) => e.id === t || (e.label ?? '').toLowerCase() === t);
+  const direct = level.endpoints.find((e) => e.id === t || allForms(e.label).includes(t));
   if (direct) return direct.id;
   if (t === 'internet' || t === 'wan') return level.endpoints.find((e) => e.kind === 'internet')?.id ?? null;
   const inPool = level.endpoints.find((e) => e.pool === t);
   if (inPool) return inPool.id;
-  const inGroup = level.endpoints.find((e) => e.group === t);
+  const group = level.groups.find((g) => g.id === t || g.aliases?.includes(t));
+  const inGroup = group && level.endpoints.find((e) => e.group === group.id);
   return inGroup?.id ?? null;
 }
 
@@ -74,19 +77,16 @@ function probeWith(ctx: ProbeContext, src: string, dst: string, svc: Service): P
   const srcIp = addr.ipOf.get(src);
   const dstIp = addr.ipOf.get(dst);
   const svcText = svc.proto === 'icmp' ? 'ICMP' : formatService(svc.proto, svc.port);
-  lines.push(
-    `${label(ctx, src)} (${srcIp !== undefined ? formatIp(srcIp) : 'sans IP'}) → ${label(ctx, dst)} (${
-      dstIp !== undefined ? formatIp(dstIp) : 'sans IP'
-    }) · ${svcText}`,
-  );
+  const ipText = (ip: number | undefined) => (ip !== undefined ? formatIp(ip) : T.diag.noIp);
+  lines.push(`${label(ctx, src)} (${ipText(srcIp)}) → ${label(ctx, dst)} (${ipText(dstIp)}) · ${svcText}`);
   const fail = (text: string, blockedAt?: string, path: string[] | null = null): Probe => {
     lines.push(`✖ ${text}`);
     return { ok: false, path, lines, blockedAt };
   };
-  if (ctx.config.quarantine.includes(src)) return fail(`${label(ctx, src)} est en quarantaine.`);
-  if (ctx.config.quarantine.includes(dst)) return fail(`${label(ctx, dst)} est en quarantaine.`);
-  if (srcIp === undefined) return fail(`${label(ctx, src)} n’a pas d’adresse IP : vérifie son sous-réseau.`);
-  if (dstIp === undefined) return fail(`${label(ctx, dst)} n’a pas d’adresse IP : vérifie son sous-réseau.`);
+  if (ctx.config.quarantine.includes(src)) return fail(T.diag.quarantined(label(ctx, src)));
+  if (ctx.config.quarantine.includes(dst)) return fail(T.diag.quarantined(label(ctx, dst)));
+  if (srcIp === undefined) return fail(T.diag.hostNoIp(label(ctx, src)));
+  if (dstIp === undefined) return fail(T.diag.hostNoIp(label(ctx, dst)));
   const vs = addr.vlanOf.get(src)!;
   const vd = addr.vlanOf.get(dst)!;
   const routed = vs === vd;
@@ -94,11 +94,11 @@ function probeWith(ctx: ProbeContext, src: string, dst: string, svc: Service): P
   if (!path) {
     const l2 = routing.distance(src, dst, true) < Infinity;
     if (!routed && l2) {
-      const a = vs === 0 ? 'Internet' : `VLAN ${vs}`;
-      const b = vd === 0 ? 'Internet' : `VLAN ${vd}`;
-      return fail(`${a} → ${b} : aucun équipement de niveau 3 (routeur) sur le chemin.`);
+      const a = vs === 0 ? T.diag.internet : T.diag.vlan(vs);
+      const b = vd === 0 ? T.diag.internet : T.diag.vlan(vd);
+      return fail(T.diag.noL3(a, b));
     }
-    return fail('Aucune route : vérifie le câblage (et la couverture Wi-Fi).');
+    return fail(T.diag.noRoute);
   }
   const rules = compileRules(ctx.level, ctx.config.rules);
   const mctx = matchContext(ctx.level, addr);
@@ -111,17 +111,17 @@ function probeWith(ctx: ProbeContext, src: string, dst: string, svc: Service): P
       r = true;
       const rule = firstMatch(rules, header, mctx);
       if (rule && rule.rule.action === 'deny') {
-        lines.push(`  ${String(i).padStart(2)}  ${node.label}  [routé · pare-feu : bloqué]`);
+        lines.push(`  ${String(i).padStart(2)}  ${node.label}  ${T.diag.hopBlocked}`);
         const idx = ctx.config.rules.indexOf(rule.rule) + 1;
-        return fail(`Bloqué par ${node.label}, règle #${idx} : ${formatRule(rule.rule)}.`, node.id, path.slice(0, i + 1));
+        return fail(T.diag.blockedBy(node.label, idx, formatRule(rule.rule)), node.id, path.slice(0, i + 1));
       }
-      note = rule ? `  [routé · autorisé par la règle #${ctx.config.rules.indexOf(rule.rule) + 1}]` : '  [routé · pare-feu : aucune règle]';
+      note = `  ${rule ? T.diag.hopAllowed(ctx.config.rules.indexOf(rule.rule) + 1) : T.diag.hopNoRule}`;
     } else if (node.l3) {
-      note = '  [commuté, même VLAN : pas de filtrage]';
+      note = `  ${T.diag.hopSwitched}`;
     }
     lines.push(`  ${String(i).padStart(2)}  ${node.label}${note}`);
   }
-  lines.push(`✔ Joignable en ${path.length - 1} saut(s).`);
+  lines.push(T.diag.reachable(path.length - 1));
   return { ok: true, path, lines };
 }
 
@@ -137,29 +137,29 @@ export function probe(
   return probeWith(context(level, net, config, isUp), src, dst, svc);
 }
 
-/** Vérifications affichées avant le lancement et pendant la configuration. */
+/** Checks shown before launch and during configuration. */
 export function preflight(level: LevelDef, design: Design, net: Network, config: NetConfig): Issue[] {
   const issues: Issue[] = [];
   const cost = designCost(level, design);
-  if (cost > level.budget) issues.push({ level: 'error', text: `Budget dépassé de ${euros(cost - level.budget)}.` });
+  if (cost > level.budget) issues.push({ level: 'error', code: 'budget', text: T.diag.overBudget(cost - level.budget) });
 
   const broken = brokenCables(level, design);
-  if (broken.size) issues.push({ level: 'warn', text: `${broken.size} câble(s) trop long(s) : ils ne transportent plus rien.` });
+  if (broken.size) issues.push({ level: 'warn', code: 'broken', text: T.diag.tooLongCables(broken.size) });
 
   const unc = uncabledEndpoints(level, design);
   const inet = unc.filter((e) => e.kind === 'internet');
   const others = unc.filter((e) => e.kind !== 'internet');
-  if (inet.length) issues.push({ level: 'warn', text: 'L’arrivée Internet n’est reliée à aucun routeur.', nodes: inet.map((e) => e.id) });
+  if (inet.length) issues.push({ level: 'warn', code: 'isp', text: T.diag.ispUnlinked, nodes: inet.map((e) => e.id) });
   if (others.length) {
-    issues.push({ level: 'warn', text: `${others.length} poste(s) ou serveur(s) non raccordé(s).`, nodes: others.map((e) => e.id) });
+    issues.push({ level: 'warn', code: 'uncabled', text: T.diag.unconnected(others.length), nodes: others.map((e) => e.id) });
   }
   if (net.uncovered.length) {
-    issues.push({ level: 'warn', text: `${net.uncovered.length} portable(s) hors couverture Wi-Fi.`, nodes: net.uncovered });
+    issues.push({ level: 'warn', code: 'wifi', text: T.diag.uncovered(net.uncovered.length), nodes: net.uncovered });
   }
 
   const ctx = context(level, net, config);
   for (const v of ctx.addr.vlans) {
-    if (!v.ok) issues.push({ level: 'warn', text: `VLAN ${v.vlan} : ${v.error}${v.hint ? ` ${v.hint}` : ''}` });
+    if (!v.ok) issues.push({ level: 'warn', code: 'vlan', text: T.diag.vlanIssue(v.vlan, `${v.error}${v.hint ? ` ${v.hint}` : ''}`) });
   }
 
   const internet = level.endpoints.find((e) => e.kind === 'internet');
@@ -170,7 +170,7 @@ export function preflight(level: LevelDef, design: Design, net: Network, config:
     const members = level.endpoints.filter((e) => e.group === g.id && e.kind !== 'internet');
     const targets: { id: string; name: string; svc: Service }[] = [];
     if (internet && ((gt.mix.web ?? 0) > 0 || (gt.mix.stream ?? 0) > 0)) {
-      targets.push({ id: internet.id, name: 'Internet', svc: { proto: 'tcp', port: 443 } });
+      targets.push({ id: internet.id, name: T.diag.internet, svc: { proto: 'tcp', port: 443 } });
     }
     for (const pool of gt.data ?? []) {
       const srv = level.endpoints.find((e) => e.pool === pool);
@@ -183,7 +183,8 @@ export function preflight(level: LevelDef, design: Design, net: Network, config:
         const why = first.lines[first.lines.length - 1].replace(/^✖ /, '');
         issues.push({
           level: 'warn',
-          text: `${g.name} → ${t.name} : ${failing.length}/${members.length} poste(s) sans accès. ${why}`,
+          code: 'access',
+          text: T.diag.noAccess(loc(g.name), t.name, failing.length, members.length, why),
           nodes: failing.map((m) => m.id),
         });
       }
@@ -194,7 +195,7 @@ export function preflight(level: LevelDef, design: Design, net: Network, config:
   if (cust && internet) {
     const servers = level.endpoints.filter((e) => e.pool === cust.pool);
     const ok = servers.filter((s) => probeWith(ctx, internet.id, s.id, { proto: 'tcp', port: 443 }).ok);
-    if (!ok.length) issues.push({ level: 'warn', text: `Clients → ${cust.pool.toUpperCase()} : le site est injoignable depuis Internet.` });
+    if (!ok.length) issues.push({ level: 'warn', code: 'site', text: T.diag.siteDown(cust.pool.toUpperCase()) });
   }
 
   for (const a of level.audits ?? []) {
@@ -210,7 +211,7 @@ export function preflight(level: LevelDef, design: Design, net: Network, config:
       }
       if (leak) break;
     }
-    if (leak) issues.push({ level: 'warn', text: `Audit « ${a.label} » : accès possible (${leak}).` });
+    if (leak) issues.push({ level: 'warn', code: 'audit', text: T.diag.auditLeak(loc(a.label), leak) });
   }
 
   return issues;

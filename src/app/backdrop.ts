@@ -1,4 +1,4 @@
-// Fond animé de l'écran titre : un réseau abstrait où circulent des paquets néon.
+// Animated background of the title screen: an abstract network with neon packets flowing.
 
 import { TRAFFIC } from '../core/catalog.ts';
 import { Rng } from '../core/rng.ts';

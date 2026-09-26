@@ -1,9 +1,13 @@
-// Simulation temps réel d'une journée de travail : paquets, files d'attente, chaleur,
-// frustration des utilisateurs, attaques, pannes et techniciens.
-// Pas fixe (STEP) et graine fixe : une même conception rejoue exactement la même journée.
+// Real-time simulation of a working day: packets, queues, heat, user frustration,
+// attacks, failures and technicians.
+// Fixed step (STEP) and fixed seed: the same design and the same player actions replay
+// exactly the same day. The server relies on this to verify leaderboard scores.
 
+import { loc, T } from '../i18n/index.ts';
 import { HEAT, TRAFFIC, tempCelsius } from './catalog.ts';
+import { dist, exp } from './detmath.ts';
 import {
+  cloneConfig,
   compileRules,
   computeAddressing,
   firstMatch,
@@ -24,13 +28,13 @@ import type { Proto, SkillId, TrafficKind, Vec } from './types.ts';
 export const STEP = 1 / 60;
 
 export const FRUSTRATION = {
-  /** Hausse par seconde quand toutes les transactions échouent. */
+  /** Rise per second when every transaction fails. */
   gain: 8,
-  /** Baisse par seconde quand tout va bien. */
+  /** Drop per second when everything goes well. */
   relief: 1.5,
-  /** Mémoire (s) des transactions récentes. */
+  /** Memory (s) of recent transactions. */
   tau: 5,
-  /** Amortit les petits volumes (début de journée). */
+  /** Dampens small volumes (start of the day). */
   damping: 3,
   lateWait: 0.8,
   badWait: 2.5,
@@ -48,7 +52,7 @@ export type Quality = 'good' | 'late' | 'bad';
 export interface Flow {
   id: number;
   kind: TrafficKind;
-  /** Groupe du demandeur, ou « clients » pour le trafic e-commerce entrant. */
+  /** Group of the requester, or "clients" for inbound e-commerce traffic. */
   group: string;
   pool?: string;
   done: boolean;
@@ -89,7 +93,7 @@ export interface NodeState {
   heat: number;
   warned: boolean;
   infected: boolean;
-  /** Réinstallé et corrigé par un technicien : immunisé contre le ver. */
+  /** Reinstalled and patched by a technician: immune to the worm. */
   patched: boolean;
   quarantined: boolean;
   lastEffect: number;
@@ -181,7 +185,7 @@ export interface Observed {
   port: number;
 }
 
-/** Débit observé d'un port ou d'une source : récent (≈ 3 s) et ligne de base (≈ 30 s). */
+/** Observed rate of a port or a source: recent (≈ 3 s) and baseline (≈ 30 s). */
 interface Rate {
   count: number;
   fast: number;
@@ -197,6 +201,9 @@ export interface TopEntry {
   dsts: string[];
   anomalous: boolean;
 }
+
+/** A player action during the day, recorded with the step at which it happened. */
+export type SimAction = { tick: number; kind: 'config'; config: NetConfig } | { tick: number; kind: 'dispatch'; id: string };
 
 export interface SimOptions {
   skills?: ReadonlySet<SkillId>;
@@ -271,6 +278,8 @@ export class Simulation {
   private readonly rng: Rng;
 
   t = 0;
+  /** Steps simulated so far. */
+  ticks = 0;
   frustration = 0;
   finished = false;
   failed = false;
@@ -288,6 +297,10 @@ export class Simulation {
   readonly history: number[] = [];
   readonly ruleHits = new Map<number, number>();
   readonly stats: Stats;
+  /** Configuration at the start of the day. */
+  readonly initialConfig: NetConfig;
+  /** Player actions in order: enough to replay the whole day. */
+  readonly actions: SimAction[] = [];
 
   private readonly users: NodeState[] = [];
   private readonly processors: NodeState[] = [];
@@ -296,7 +309,7 @@ export class Simulation {
   private readonly internetId: string | null;
   private readonly firedEvents = new Set<EventDef>();
   private readonly peaks: { ev: Extract<EventDef, { kind: 'peak' }>; start: number }[] = [];
-  private readonly audits: { from: string[]; to: string[]; rate: number; label: string }[] = [];
+  private readonly audits: { from: string[]; to: string[]; rate: number }[] = [];
   private readonly timers: { at: number; fn: () => void }[] = [];
   private readonly rr = new Map<string, number>();
   private readonly rateTokens = new Map<number, number>();
@@ -322,6 +335,7 @@ export class Simulation {
     this.skills = opts.skills ?? new Set();
     this.rng = new Rng(opts.seed ?? level.seed);
     this.config = config;
+    this.initialConfig = cloneConfig(config);
     this.addr = computeAddressing(level, config);
     this.mctx = matchContext(level, this.addr);
     this.rules = compileRules(level, config.rules);
@@ -385,7 +399,7 @@ export class Simulation {
       const to = level.endpoints
         .filter((e) => e.kind !== 'internet' && (e.pool === a.to || e.group === a.to || e.id === a.to))
         .map((e) => e.id);
-      if (from.length && to.length) this.audits.push({ from, to, rate: a.rate, label: a.label });
+      if (from.length && to.length) this.audits.push({ from, to, rate: a.rate });
     }
 
     const techCount = this.skills.has('tech2') ? 2 : 1;
@@ -394,11 +408,11 @@ export class Simulation {
       this.techs.push({ id: i + 1, x: home.x, y: home.y, home, state: 'idle', target: null, job: null, path: [], work: 0, workTotal: 0 });
     }
 
-    this.pushLog('info', `${level.company} · la journée commence. Bon courage !`);
+    this.pushLog('info', T.sim.dayStart(level.company));
   }
 
   // -------------------------------------------------------------------------
-  // Accès
+  // Accessors
 
   get fraction(): number {
     return Math.min(1, this.t / this.dayLength);
@@ -443,10 +457,11 @@ export class Simulation {
   }
 
   // -------------------------------------------------------------------------
-  // Boucle
+  // Loop
 
   step(dt = STEP): void {
     if (this.finished) return;
+    this.ticks++;
     this.t += dt;
     this.effectBudget = 8;
     const sec = Math.floor(this.t);
@@ -473,16 +488,16 @@ export class Simulation {
       this.frustration = 100;
       this.failed = true;
       this.finished = true;
-      this.failReason = 'La frustration des utilisateurs a atteint 100 % : la direction reprend la main.';
-      this.pushLog('crit', 'Frustration à 100 % : la journée tourne à l’émeute au service support.');
+      this.failReason = T.sim.failReason;
+      this.pushLog('crit', T.sim.riot);
     } else if (this.t >= this.dayLength) {
       this.finished = true;
-      this.pushLog('ok', '18:00 · fin de journée. Les utilisateurs rentrent chez eux.');
+      this.pushLog('ok', T.sim.dayEnd);
     }
   }
 
   // -------------------------------------------------------------------------
-  // Génération du trafic
+  // Traffic generation
 
   private peakFactor(target: 'all' | 'customers' | 'stream'): number {
     let f = 1;
@@ -512,7 +527,7 @@ export class Simulation {
         const srv = this.pickServer(pool);
         this.request(kind, s.node.id, srv?.node.id ?? null, s.node.group ?? '', pool, pool);
       } else {
-        this.request(kind, s.node.id, this.internetId, s.node.group ?? '', undefined, 'Internet');
+        this.request(kind, s.node.id, this.internetId, s.node.group ?? '', undefined, T.sim.internet);
       }
     }
 
@@ -534,7 +549,7 @@ export class Simulation {
             })
           : 'down';
         if (err) {
-          this.unreachable(flow, this.internetId, err, 'Clients', cust.pool);
+          this.unreachable(flow, this.internetId, err, T.sim.customers, cust.pool);
         }
       }
     }
@@ -558,7 +573,7 @@ export class Simulation {
       const elapsed = this.t - inc.start;
       if (elapsed > ev.duration) {
         inc.end = this.t;
-        if (inc.resolved === undefined) this.pushLog('warn', `L’attaque ${ev.name} s’arrête d’elle-même, sans avoir été neutralisée.`);
+        if (inc.resolved === undefined) this.pushLog('warn', T.sim.attackFaded(loc(ev.name)));
         continue;
       }
       const sources = parseCidr(ev.sources)!;
@@ -591,7 +606,7 @@ export class Simulation {
     }
   }
 
-  /** Nombre d'arrivées pendant un pas pour une espérance donnée. */
+  /** Number of arrivals during one step for a given expectation. */
   private arrivals(expected: number): number {
     const n = Math.floor(expected);
     return n + (this.rng.next() < expected - n ? 1 : 0);
@@ -662,16 +677,16 @@ export class Simulation {
     this.throttle.set(key, this.t);
     const msg =
       reason === 'noip'
-        ? `${who} : des postes n’ont pas d’adresse IP (sous-réseau manquant, invalide ou trop petit).`
+        ? T.sim.noIp(who)
         : reason === 'noroute'
-          ? `${who} → ${dest} : aucune route. Vérifie le câblage, les VLAN et le passage par un routeur.`
+          ? T.sim.noRoute(who, dest)
           : reason === 'isolated'
-            ? `Postes en quarantaine : leurs utilisateurs ne peuvent plus travailler. Envoie un technicien les nettoyer.`
-            : `${who} → ${dest} : destination hors service.`;
+            ? T.sim.isolated
+            : T.sim.destDown(who, dest);
     this.pushLog('warn', msg);
   }
 
-  /** Crée un paquet à la source. Renvoie null si c'est parti, sinon la raison de l'échec. */
+  /** Creates a packet at its source. Returns null when it left, otherwise why it failed. */
   private spawn(o: {
     kind: TrafficKind;
     src: string;
@@ -742,10 +757,10 @@ export class Simulation {
     if (this.recent.length > 60) this.recent.shift();
   }
 
-  /** Chaque seconde : moyenne récente et ligne de base (détection d'anomalie façon IDS). */
+  /** Every second: recent average and baseline (IDS-style anomaly detection). */
   private rollRates(map: Map<string, Rate>): void {
-    const kFast = 1 - Math.exp(-1 / 3);
-    const kSlow = 1 - Math.exp(-1 / 30);
+    const kFast = 1 - exp(-1 / 3);
+    const kSlow = 1 - exp(-1 / 30);
     for (const r of map.values()) {
       r.fast += (r.count - r.fast) * kFast;
       r.slow = this.t < 12 ? r.fast : r.slow + (r.count - r.slow) * kSlow;
@@ -756,7 +771,7 @@ export class Simulation {
   }
 
   // -------------------------------------------------------------------------
-  // Commutation, routage et service
+  // Switching, routing and service
 
   private egressMax(n: NetNode): number {
     if (n.kind === 'internet') return 150;
@@ -822,10 +837,10 @@ export class Simulation {
 
   private forward(s: NodeState, p: Packet): number {
     const n = s.node;
-    // Un niveau 3 route le paquet s'il change de VLAN (ou sort vers Internet) : c'est là, et
-    // seulement là, que le pare-feu s'applique. Le trafic d'un même VLAN est simplement commuté.
+    // A layer 3 device routes the packet when it changes VLAN (or leaves for the Internet): that is
+    // where, and only where, the firewall applies. Traffic within a VLAN is simply switched.
     if (n.l3 && !p.routed) {
-      // Pare-feu à état : les réponses des connexions établies passent toujours.
+      // Stateful firewall: replies to established connections always pass.
       if (!p.response) {
         const rule = firstMatch(this.rules, this.header(p), this.mctx);
         if (rule) this.ruleHits.set(rule.rule.id, (this.ruleHits.get(rule.rule.id) ?? 0) + 1);
@@ -915,7 +930,7 @@ export class Simulation {
         }
       }
     }
-    const alpha = 1 - Math.exp(-dt / 1.0);
+    const alpha = 1 - exp(-dt / 1.0);
     for (const ls of this.linkStates.values()) {
       for (const dir of [0, 1] as const) {
         const owner = dir === 0 ? ls.link.a : ls.link.b;
@@ -1012,7 +1027,7 @@ export class Simulation {
   }
 
   // -------------------------------------------------------------------------
-  // Issues des transactions
+  // Transaction outcomes
 
   private kill(p: Packet): void {
     p.dead = true;
@@ -1092,7 +1107,7 @@ export class Simulation {
     const last = this.throttle.get(key) ?? -Infinity;
     if (this.t - last < 6) return;
     this.throttle.set(key, this.t);
-    this.pushLog('crit', `BRÈCHE · ${src} a atteint ${target.label} (${p.proto.toUpperCase()}/${p.port}). Segmente et filtre !`);
+    this.pushLog('crit', T.sim.breach(src, target.label, `${p.proto.toUpperCase()}/${p.port}`));
   }
 
   private wormHit(s: NodeState): void {
@@ -1107,8 +1122,8 @@ export class Simulation {
     this.everInfected.add(s.node.id);
     this.stats.infectedTotal = this.everInfected.size;
     this.effectAt('infect', s.node.id);
-    const action = this.skills.has('ids') ? { label: `Isoler ${s.node.label}`, cmd: `quarantine ${s.node.id}` } : undefined;
-    this.pushLog('warn', `${s.node.label} est infecté par le ver.`, action);
+    const action = this.skills.has('ids') ? { label: T.sim.isolate(s.node.label), cmd: `quarantine ${s.node.id}` } : undefined;
+    this.pushLog('warn', T.sim.infected(s.node.label), action);
   }
 
   private noteAttack(blocked: boolean): void {
@@ -1120,24 +1135,25 @@ export class Simulation {
   }
 
   // -------------------------------------------------------------------------
-  // Température et pannes
+  // Temperature and failures
 
   private updateThermal(dt: number): void {
-    const alpha = 1 - Math.exp(-dt / 1.2);
+    const alpha = 1 - exp(-dt / 1.2);
     const coolBoost = this.skills.has('cooling') ? HEAT.coolingSkill : 1;
     for (const s of this.processors) {
       const n = s.node;
       const inst = s.processed / (n.capacity * dt);
       const target = s.up ? (s.ingress.length > 3 ? Math.max(1, inst) : inst) : 0;
       s.load = Math.min(1.2, s.load + (target - s.load) * alpha);
-      const gain = s.up ? HEAT.gain * n.heat * Math.min(1, s.load) ** 2 : 0;
+      const l = Math.min(1, s.load);
+      const gain = s.up ? HEAT.gain * n.heat * l * l : 0;
       s.heat = Math.max(0, s.heat + (gain - n.cooling * coolBoost * s.heat) * dt);
       if (s.up && s.heat >= HEAT.overheat) this.overheat(s);
       else if (s.down === 'overheat' && s.heat <= HEAT.restart) this.restart(s);
       if (s.up && !s.warned && s.heat >= 0.8) {
         s.warned = true;
-        const where = n.roomKind === 'server' ? '' : ' Pense à la salle serveurs climatisée.';
-        this.pushLog('warn', `${n.label} chauffe : ${tempCelsius(s.heat)} °C.${where}`);
+        const where = n.roomKind === 'server' ? '' : T.sim.hotHint;
+        this.pushLog('warn', `${T.sim.hot(n.label, tempCelsius(s.heat))}${where}`);
       } else if (s.warned && s.heat < 0.6) s.warned = false;
     }
   }
@@ -1157,7 +1173,7 @@ export class Simulation {
     this.flush(s);
     this.routing.invalidate();
     this.effectAt('overheat', s.node.id);
-    this.pushLog('crit', `${s.node.label} en surchauffe (${tempCelsius(s.heat)} °C) : arrêt de sécurité.`);
+    this.pushLog('crit', T.sim.overheat(s.node.label, tempCelsius(s.heat)));
   }
 
   private restart(s: NodeState): void {
@@ -1165,11 +1181,11 @@ export class Simulation {
     s.down = null;
     s.tokens = 0;
     this.routing.invalidate();
-    this.pushLog('info', `${s.node.label} a refroidi et redémarre.`);
+    this.pushLog('info', T.sim.restart(s.node.label));
   }
 
   // -------------------------------------------------------------------------
-  // Événements scénarisés et incidents
+  // Scripted events and incidents
 
   private fireEvents(): void {
     for (const ev of this.level.events ?? []) {
@@ -1178,7 +1194,7 @@ export class Simulation {
       switch (ev.kind) {
         case 'peak':
           this.peaks.push({ ev, start: this.t });
-          this.pushLog('warn', ev.message);
+          this.pushLog('warn', loc(ev.message));
           break;
         case 'failure':
           this.startFailure(ev);
@@ -1218,14 +1234,14 @@ export class Simulation {
     this.flush(target);
     this.routing.invalidate();
     this.effectAt('failure', target.node.id);
-    this.newIncident('failure', `Panne matérielle ${target.node.label}`, { target: target.node.id, deadline: ev.deadline });
-    this.pushLog('crit', `Panne matérielle : ${target.node.label} ne répond plus. Envoie un technicien avant ${ev.deadline} s !`, {
-      label: 'Envoyer un technicien',
+    this.newIncident('failure', T.sim.failureLabel(target.node.label), { target: target.node.id, deadline: ev.deadline });
+    this.pushLog('crit', T.sim.failure(target.node.label, ev.deadline), {
+      label: T.sim.sendTech,
       cmd: `dispatch ${target.node.id}`,
     });
   }
 
-  /** Le switch d'accès qui dessert le plus de postes (le plus douloureux). */
+  /** The access switch serving the most hosts (the most painful one). */
   private autoFailureTarget(): NodeState | undefined {
     let best: NodeState | undefined;
     let score = -1;
@@ -1243,21 +1259,22 @@ export class Simulation {
   }
 
   private edgeLabel(): string {
-    if (!this.internetId) return 'le routeur';
+    if (!this.internetId) return T.sim.theRouter;
     const l = (this.net.adj.get(this.internetId) ?? [])[0];
-    return l ? this.net.byId.get(otherEnd(l, this.internetId))!.label : 'le routeur';
+    return l ? this.net.byId.get(otherEnd(l, this.internetId))!.label : T.sim.theRouter;
   }
 
   private startDdos(ev: Extract<EventDef, { kind: 'ddos' }>): void {
-    this.newIncident('ddos', ev.name, { event: ev, target: ev.target });
+    const name = loc(ev.name);
+    this.newIncident('ddos', name, { event: ev, target: ev.target });
     const vector = `${ev.proto.toUpperCase()}/${ev.port}`;
     const byPort = !(ev.proto === 'tcp' && ev.port === 443);
     const cmd = byPort ? `block ${ev.proto} ${ev.port}` : `blockip ${ev.sources}`;
-    const label = byPort ? `Bloquer ${vector}` : `Bloquer ${ev.sources}`;
+    const label = T.sim.block(byPort ? vector : ev.sources);
     if (this.skills.has('ids')) {
-      this.pushLog('crit', `IDS · ${ev.name} : ${vector} depuis ${ev.sources} vers ${ev.target.toUpperCase()}.`, { label, cmd });
+      this.pushLog('crit', T.sim.idsDdos(name, vector, ev.sources, ev.target.toUpperCase()), { label, cmd });
     } else {
-      this.pushLog('crit', `Trafic entrant anormal sur ${this.edgeLabel()} ! Analyse-le avec « top » puis « tcpdump ».`);
+      this.pushLog('crit', T.sim.ddos(this.edgeLabel()));
     }
   }
 
@@ -1265,35 +1282,35 @@ export class Simulation {
     const s = this.states.get(ev.patient);
     if (!s) return;
     this.worm = { rate: ev.rate, chance: ev.chance };
-    this.newIncident('worm', 'Propagation d’un ver');
+    this.newIncident('worm', T.sim.wormLabel);
     this.infect(s);
     if (this.skills.has('ids')) {
-      this.pushLog('crit', `IDS · ${s.node.label} balaye le réseau en TCP/445 : ver détecté.`, {
-        label: `Isoler ${s.node.label}`,
+      this.pushLog('crit', T.sim.idsWorm(s.node.label), {
+        label: T.sim.isolate(s.node.label),
         cmd: `quarantine ${s.node.id}`,
       });
     } else {
       this.later(6, () =>
-        this.pushLog('crit', 'Trafic SMB (TCP/445) anormal entre postes. Trouve la source avec « top src ».'),
+        this.pushLog('crit', T.sim.worm),
       );
     }
   }
 
   private updateIncidents(dt: number): void {
-    const decay = Math.exp(-dt / 2);
+    const decay = exp(-dt / 2);
     for (const inc of this.incidents) {
       if (inc.resolved !== undefined) continue;
       if (inc.kind === 'failure' && inc.deadline !== undefined && !inc.missed && this.t > inc.start + inc.deadline) {
         inc.missed = true;
         this.frustration = Math.min(100, this.frustration + FRUSTRATION.missedIncident);
-        this.pushLog('crit', `Délai dépassé pour ${inc.label} : la direction s’impatiente (+${FRUSTRATION.missedIncident} % de frustration).`);
+        this.pushLog('crit', T.sim.deadlineMissed(inc.label, FRUSTRATION.missedIncident));
       }
       if (inc.kind === 'ddos' && inc.end === undefined) {
         inc.passed *= decay;
         inc.blocked *= decay;
         if (inc.blocked > 6 && inc.blocked / (inc.blocked + inc.passed) >= 0.9) {
           inc.resolved = this.t;
-          this.pushLog('ok', `Attaque ${inc.label} neutralisée en ${Math.round(this.t - inc.start)} s.`);
+          this.pushLog('ok', T.sim.attackStopped(inc.label, Math.round(this.t - inc.start)));
         } else if (this.skills.has('autoblock') && !inc.autoDone && this.t - inc.start >= 6) {
           inc.autoDone = true;
           this.autoMitigate(inc);
@@ -1301,7 +1318,7 @@ export class Simulation {
       }
       if (inc.kind === 'worm' && this.t - inc.start > 1 && this.activeInfected().length === 0) {
         inc.resolved = this.t;
-        this.pushLog('ok', `Ver contenu en ${Math.round(this.t - inc.start)} s : plus aucun poste infecté actif.`);
+        this.pushLog('ok', T.sim.wormContained(Math.round(this.t - inc.start)));
       }
     }
   }
@@ -1313,12 +1330,12 @@ export class Simulation {
       ? { src: 'any', dst: 'any', proto: ev.proto, port: ev.port }
       : { src: ev.sources, dst: 'any', proto: 'any' as const, port: null };
     this.config.rules.unshift({ id: this.config.seq++, action: 'deny', ...rule });
-    this.applyConfig(this.config);
-    this.pushLog('ok', `Script d’auto-mitigation : règle de blocage posée (${byPort ? `${ev.proto.toUpperCase()}/${ev.port}` : ev.sources}).`);
+    this.reconfigure(this.config);
+    this.pushLog('ok', T.sim.autoMitigation(byPort ? `${ev.proto.toUpperCase()}/${ev.port}` : ev.sources));
   }
 
   // -------------------------------------------------------------------------
-  // Techniciens
+  // Technicians
 
   private updateTechs(dt: number): void {
     const speed = TECH_SPEED * (this.skills.has('tech_speed') ? 1.6 : 1);
@@ -1329,7 +1346,7 @@ export class Simulation {
           const wp = tech.path[0];
           const dx = wp.x - tech.x;
           const dy = wp.y - tech.y;
-          const d = Math.hypot(dx, dy);
+          const d = dist(dx, dy);
           if (d <= budget) {
             tech.x = wp.x;
             tech.y = wp.y;
@@ -1370,8 +1387,7 @@ export class Simulation {
       for (const inc of this.incidents) {
         if (inc.kind === 'failure' && inc.target === s.node.id && inc.resolved === undefined) {
           inc.resolved = this.t;
-          const late = inc.missed ? ' (hors délai)' : '';
-          this.pushLog('ok', `${s.node.label} réparé en ${Math.round(this.t - inc.start)} s${late}.`);
+          this.pushLog('ok', T.sim.repaired(s.node.label, Math.round(this.t - inc.start), inc.missed));
         }
       }
     } else if (s && tech.job === 'clean') {
@@ -1379,10 +1395,10 @@ export class Simulation {
       s.patched = true;
       if (s.quarantined) {
         this.config.quarantine = this.config.quarantine.filter((id) => id !== s.node.id);
-        this.applyConfig(this.config);
+        this.reconfigure(this.config);
       }
       this.effectAt('fixed', s.node.id);
-      this.pushLog('ok', `${s.node.label} réinstallé, corrigé et remis en service : il est désormais immunisé.`);
+      this.pushLog('ok', T.sim.cleaned(s.node.label));
     }
     tech.state = 'returning';
     tech.job = null;
@@ -1401,7 +1417,7 @@ export class Simulation {
   // Frustration
 
   private updateFrustration(dt: number): void {
-    const decay = Math.exp(-dt / FRUSTRATION.tau);
+    const decay = exp(-dt / FRUSTRATION.tau);
     this.good *= decay;
     this.bad *= decay;
     for (const m of this.mood.values()) {
@@ -1415,7 +1431,7 @@ export class Simulation {
     this.stats.peakFrustration = Math.max(this.stats.peakFrustration, this.frustration);
   }
 
-  /** Part des transactions récentes qui se passent mal (0 → 1). */
+  /** Share of recent transactions that go wrong (0 → 1). */
   get badRatio(): number {
     return this.bad / (this.good + this.bad + FRUSTRATION.damping);
   }
@@ -1442,9 +1458,15 @@ export class Simulation {
   }
 
   // -------------------------------------------------------------------------
-  // Commandes du joueur
+  // Player commands
 
+  /** Configuration change made by the player during the day (recorded for replays). */
   applyConfig(cfg: NetConfig): void {
+    this.actions.push({ tick: this.ticks, kind: 'config', config: cloneConfig(cfg) });
+    this.reconfigure(cfg);
+  }
+
+  private reconfigure(cfg: NetConfig): void {
     this.config = cfg;
     this.addr = computeAddressing(this.level, cfg);
     this.mctx = matchContext(this.level, this.addr);
@@ -1455,9 +1477,9 @@ export class Simulation {
       s.quarantined = q.has(s.node.id);
       if (!was && s.quarantined) {
         this.flush(s);
-        this.pushLog('info', `${s.node.label} isolé du réseau (quarantaine).`);
+        this.pushLog('info', T.sim.quarantined(s.node.label));
       } else if (was && !s.quarantined) {
-        this.pushLog('info', `${s.node.label} sort de quarantaine.`);
+        this.pushLog('info', T.sim.released(s.node.label));
       }
     }
     this.routing.invalidate();
@@ -1466,35 +1488,35 @@ export class Simulation {
 
   dispatch(id: string): { ok: boolean; message: string } {
     const s = this.states.get(id);
-    if (!s) return { ok: false, message: `Élément inconnu : ${id}.` };
+    if (!s) return { ok: false, message: T.sim.unknown(id) };
     let job: Technician['job'] = null;
     if (s.down === 'failure') job = 'repair';
     else if (s.node.endpoint && (s.infected || s.quarantined)) job = 'clean';
-    if (!job) return { ok: false, message: `${s.node.label} n’a pas besoin d’intervention.` };
+    if (!job) return { ok: false, message: T.sim.noNeed(s.node.label) };
     if (this.techs.some((t) => t.target === id && (t.state === 'moving' || t.state === 'working'))) {
-      return { ok: false, message: `Un technicien s’occupe déjà de ${s.node.label}.` };
+      return { ok: false, message: T.sim.busyOn(s.node.label) };
     }
     const free = this.techs
       .filter((t) => t.state === 'idle' || t.state === 'returning')
-      .sort((a, b) => Math.hypot(a.x - s.node.x, a.y - s.node.y) - Math.hypot(b.x - s.node.x, b.y - s.node.y));
+      .sort((a, b) => dist(a.x - s.node.x, a.y - s.node.y) - dist(b.x - s.node.x, b.y - s.node.y));
     const tech = free[0];
-    if (!tech) return { ok: false, message: 'Tous les techniciens sont occupés.' };
+    if (!tech) return { ok: false, message: T.sim.allBusy };
+    this.actions.push({ tick: this.ticks, kind: 'dispatch', id });
     tech.state = 'moving';
     tech.target = id;
     tech.job = job;
     tech.workTotal = job === 'repair' ? REPAIR_TIME : CLEAN_TIME;
     tech.path = this.manhattan(tech, { x: s.node.x, y: s.node.y + 0.55 });
-    const dist = Math.abs(tech.x - s.node.x) + Math.abs(tech.y - s.node.y - 0.55);
+    const walk = Math.abs(tech.x - s.node.x) + Math.abs(tech.y - s.node.y - 0.55);
     const speed = TECH_SPEED * (this.skills.has('tech_speed') ? 1.6 : 1);
-    const eta = Math.round(dist / speed + tech.workTotal);
-    const what = job === 'repair' ? 'réparer' : 'nettoyer';
-    const msg = `Technicien ${tech.id} en route pour ${what} ${s.node.label} (≈ ${eta} s).`;
+    const eta = Math.round(walk / speed + tech.workTotal);
+    const msg = T.sim.enRoute(tech.id, job === 'repair', s.node.label, eta);
     this.pushLog('info', msg);
     return { ok: true, message: msg };
   }
 
   // -------------------------------------------------------------------------
-  // Analyse (console)
+  // Analysis (console)
 
   private top(map: Map<string, Rate>, minAbs: number, margin: number): TopEntry[] {
     const label = (id: string) => this.states.get(id)?.node.label ?? id;
@@ -1513,14 +1535,14 @@ export class Simulation {
       .sort((a, b) => b.pps - a.pps);
   }
 
-  /** Trafic par port (paquets/s récents), anomalies signalées par rapport à la ligne de base. */
+  /** Traffic per port (recent packets/s), anomalies flagged against the baseline. */
   topPorts(): TopEntry[] {
     return this.top(this.portRates, 10, 5);
   }
 
   /**
-   * Trafic par source. Une source est anormale si elle émet au moins trois fois plus que la
-   * médiane de sa population (postes internes d'un côté, plages Internet /16 de l'autre).
+   * Traffic per source. A source is abnormal when it sends at least three times more than the
+   * median of its population (internal hosts on one side, Internet /16 ranges on the other).
    */
   topSources(): TopEntry[] {
     const rows = this.top(this.srcRates, Infinity, 0);
