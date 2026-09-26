@@ -1,0 +1,29 @@
+{
+  "name": "netarchitect",
+  "private": true,
+  "version": "0.1.0",
+  "description": "NetArchitect : L'Art du Routage. Jeu de réflexion et de gestion réseau en 2D (prototype jouable).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "balance": "node scripts/balance.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@fontsource-variable/ibm-plex-sans": "^5.3.0",
+    "@fontsource-variable/oxanium": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@types/node": "^22.20.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vite-plugin-singlefile": "^2.3.3",
+    "vitest": "^5.0.2"
+  }
+}
