@@ -16,51 +16,55 @@ import { miniLevel } from './helpers.ts';
 
 const bionova = levelById('bionova')!;
 
-function manual(subnets: Record<string, string>, vlans = { rnd: 20, compta: 10, srv: 99 }): NetConfig {
+function manual(subnets: Record<string, string>, vlans = { rnd: 20, acct: 10, srv: 99 }): NetConfig {
   return { ...defaultConfig(bionova), vlans, subnets };
 }
 
-describe('adressage manuel (BioNova, bloc 10.42.0.0/27)', () => {
-  it('accepte le plan VLSM serré', () => {
+describe('manual addressing (BioNova, block 10.42.0.0/27)', () => {
+  it('accepts the tight VLSM plan', () => {
     const addr = computeAddressing(bionova, manual({ '20': '10.42.0.0/28', '10': '10.42.0.16/29', '99': '10.42.0.24/29' }));
     expect(addr.vlans.every((v) => v.ok)).toBe(true);
     expect(addr.missing).toEqual([]);
     expect(formatIp(addr.gateway.get(10)!)).toBe('10.42.0.17');
-    expect(formatIp(addr.ipOf.get('cp-1')!)).toBe('10.42.0.18');
+    expect(formatIp(addr.ipOf.get('ac-1')!)).toBe('10.42.0.18');
   });
 
-  it('signale un sous-réseau manquant', () => {
+  it('reports a missing subnet', () => {
     const addr = computeAddressing(bionova, manual({ '20': '10.42.0.0/28', '10': '10.42.0.16/29' }));
     const v99 = addr.vlans.find((v) => v.vlan === 99)!;
     expect(v99.ok).toBe(false);
-    expect(v99.error).toMatch(/Aucun sous-réseau/);
+    expect(v99.error).toMatch(/No subnet/);
     expect(addr.missing).toContain('erp');
   });
 
-  it('signale un sous-réseau trop petit et n’adresse que les premiers hôtes', () => {
+  it('reports a subnet that is too small and only addresses the first hosts', () => {
     const addr = computeAddressing(bionova, manual({ '20': '10.42.0.0/29', '10': '10.42.0.16/29', '99': '10.42.0.24/29' }));
     const v20 = addr.vlans.find((v) => v.vlan === 20)!;
     expect(v20.ok).toBe(false);
-    expect(v20.error).toMatch(/Trop petit/);
+    expect(v20.error).toMatch(/Too small/);
     expect(v20.hint).toMatch(/\/28/);
     expect(addr.missing.filter((id) => id.startsWith('rd-'))).toHaveLength(13 - 5);
   });
 
-  it('refuse une adresse non alignée et suggère la bonne', () => {
+  it('refuses a misaligned address and suggests the right one', () => {
     const addr = computeAddressing(bionova, manual({ '20': '10.42.0.0/28', '10': '10.42.0.20/29', '99': '10.42.0.24/29' }));
     const v10 = addr.vlans.find((v) => v.vlan === 10)!;
     expect(v10.ok).toBe(false);
     expect(v10.hint).toMatch(/10\.42\.0\.16\/29/);
   });
 
-  it('refuse les chevauchements et les sous-réseaux hors bloc', () => {
+  it('refuses overlaps and subnets outside the block', () => {
     const overlap = computeAddressing(bionova, manual({ '20': '10.42.0.0/28', '10': '10.42.0.8/29', '99': '10.42.0.24/29' }));
     expect(overlap.vlans.filter((v) => !v.ok).map((v) => v.vlan).sort()).toEqual([10, 20]);
     const outside = computeAddressing(bionova, manual({ '20': '10.42.0.0/28', '10': '10.42.0.16/29', '99': '10.42.0.32/29' }));
-    expect(outside.vlans.find((v) => v.vlan === 99)!.error).toMatch(/Hors du bloc/);
+    expect(outside.vlans.find((v) => v.vlan === 99)!.error).toMatch(/Outside the block/);
   });
 
-  it('le script Auto-VLAN produit un plan valide', () => {
+  it('accepts group aliases typed in another language', () => {
+    expect(parseSelector('compta', bionova)).toEqual({ t: 'group', id: 'acct' });
+  });
+
+  it('the Auto-VLAN script produces a valid plan', () => {
     const plan = autoPlan(bionova);
     if (typeof plan === 'string') throw new Error(plan);
     const addr = computeAddressing(bionova, { ...defaultConfig(bionova), ...plan });
@@ -68,8 +72,8 @@ describe('adressage manuel (BioNova, bloc 10.42.0.0/27)', () => {
   });
 });
 
-describe('adressage automatique', () => {
-  it('donne un /24 par VLAN', () => {
+describe('automatic addressing', () => {
+  it('gives a /24 per VLAN', () => {
     const lvl = miniLevel();
     const addr = computeAddressing(lvl, { ...defaultConfig(lvl), vlans: { ga: 10, gb: 20, srv: 1 } });
     expect(formatIp(addr.ipOf.get('a1')!)).toBe('10.0.10.10');
@@ -78,21 +82,22 @@ describe('adressage automatique', () => {
   });
 });
 
-describe('pare-feu', () => {
+describe('firewall', () => {
   const lvl = miniLevel();
 
-  it('analyse les sélecteurs', () => {
+  it('parses selectors', () => {
     expect(parseSelector('ga', lvl)).toEqual({ t: 'group', id: 'ga' });
     expect(parseSelector('db', lvl)).toEqual({ t: 'pool', id: 'db' });
     expect(parseSelector('vlan20', lvl)).toEqual({ t: 'vlan', v: 20 });
     expect(parseSelector('A1', lvl)).toEqual({ t: 'host', id: 'a1' });
     expect(parseSelector('internet', lvl)).toEqual({ t: 'internet' });
     expect(parseSelector('any', lvl)).toEqual({ t: 'any' });
+    expect(parseSelector('ISP', lvl)).toEqual({ t: 'internet' });
     expect(parseSelector('185.220.1.9/16', lvl)).toMatchObject({ t: 'cidr' });
-    expect(parseSelector('inconnu', lvl)).toHaveProperty('error');
+    expect(parseSelector('unknown', lvl)).toHaveProperty('error');
   });
 
-  it('analyse les services', () => {
+  it('parses services', () => {
     expect(parseService('tcp/445')).toEqual({ proto: 'tcp', port: 445 });
     expect(parseService('udp:123')).toEqual({ proto: 'udp', port: 123 });
     expect(parseService('443')).toEqual({ proto: 'any', port: 443 });
@@ -100,7 +105,7 @@ describe('pare-feu', () => {
     expect(parseService('tcp/70000')).toBeNull();
   });
 
-  it('applique la première règle qui correspond', () => {
+  it('applies the first matching rule', () => {
     const cfg = defaultConfig(lvl);
     cfg.rules = [
       { id: 1, action: 'allow', src: 'a1', dst: 'db', proto: 'any', port: null },

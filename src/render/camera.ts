@@ -1,4 +1,4 @@
-// Caméra 2D : unités monde = cases de la grille, écran = pixels CSS.
+// 2D camera: world units = grid cells, screen = CSS pixels.
 
 import type { Vec } from '../core/types.ts';
 

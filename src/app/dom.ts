@@ -1,4 +1,6 @@
-// Mini-assistant DOM : création d'éléments typés, sans innerHTML.
+// Tiny DOM helper: typed element creation, never innerHTML.
+
+import { T } from '../i18n/index.ts';
 
 type Child = Node | string | number | null | undefined | false;
 
@@ -63,7 +65,7 @@ export function replace(el: Element, ...children: Child[]): void {
 }
 
 export function stars(n: number, max = 3): HTMLSpanElement {
-  const wrap = h('span', { class: 'stars', aria: { label: `${n} étoile(s) sur ${max}` } });
+  const wrap = h('span', { class: 'stars', role: 'img', aria: { label: T.common.stars(n, max) } });
   for (let i = 0; i < max; i++) wrap.append(h('i', { class: i < n ? 'on' : '' }, '★'));
   return wrap;
 }

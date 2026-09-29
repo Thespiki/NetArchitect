@@ -1,15 +1,16 @@
-// Tables de routage par destination.
-// Règle VLAN simplifiée : les liens entre équipements sont des trunks, mais un paquet qui change
-// de VLAN (ou qui sort vers Internet) doit traverser un équipement de niveau 3 (routeur, switch L3).
-// Un paquet porte donc un drapeau « routed » : faux tant qu'il n'a pas franchi de niveau 3
-// alors que son VLAN source diffère du VLAN destination.
+// Per-destination routing tables.
+// Simplified VLAN rule: links between devices are trunks, but a packet that changes VLAN (or goes
+// to the Internet) must cross a layer 3 device (router, L3 switch). A packet therefore carries a
+// "routed" flag: false until it has crossed a layer 3 device while its source VLAN differs from
+// its destination VLAN.
 
+import { cmp } from './detmath.ts';
 import { otherEnd, type NetLink, type Network } from './network.ts';
 
 interface Table {
-  /** Distance (sauts) jusqu'à la destination pour un paquet déjà routé. */
+  /** Distance (hops) to the destination for a packet that is already routed. */
   d1: Map<string, number>;
-  /** Distance pour un paquet qui doit encore franchir un niveau 3. */
+  /** Distance for a packet that still has to cross a layer 3 device. */
   d0: Map<string, number>;
 }
 
@@ -45,7 +46,7 @@ export class Routing {
     const d0 = new Map<string, number>();
     if (!this.net.byId.has(dst) || !this.isUp(dst)) return { d1, d0 };
 
-    // d1 : parcours en largeur depuis la destination, uniquement à travers des équipements actifs.
+    // d1: breadth-first search from the destination, only through active devices.
     d1.set(dst, 0);
     const queue = [dst];
     for (let i = 0; i < queue.length; i++) {
@@ -60,7 +61,7 @@ export class Routing {
       }
     }
 
-    // d0 : plus court chemin vers un niveau 3 (qui route le paquet), puis d1 depuis ce niveau 3.
+    // d0: shortest path to a layer 3 device (which routes the packet), then d1 from that device.
     const best = new Map<string, number>();
     const buckets: string[][] = [];
     const offer = (id: string, d: number) => {
@@ -102,7 +103,7 @@ export class Routing {
     return (routed ? t.d1.get(from) : t.d0.get(from)) ?? Infinity;
   }
 
-  /** Liens candidats (à coût égal) pour avancer vers la destination. */
+  /** Candidate links (equal cost) to move towards the destination. */
   nextHops(at: string, dst: string, routed: boolean): NetLink[] {
     const t = this.table(dst);
     const cur = routed ? t.d1.get(at) : t.d0.get(at);
@@ -124,14 +125,14 @@ export class Routing {
     return out;
   }
 
-  /** Chemin déterministe (premier candidat), pour ping/traceroute. */
+  /** Deterministic path (first candidate), for ping/traceroute. */
   path(src: string, dst: string, routed: boolean): string[] | null {
     if (this.distance(src, dst, routed) === Infinity) return null;
     const out = [src];
     let at = src;
     let r = routed;
     for (let guard = 0; guard < 256 && at !== dst; guard++) {
-      const hops = this.nextHops(at, dst, r).sort((p, q) => p.id.localeCompare(q.id));
+      const hops = this.nextHops(at, dst, r).sort((p, q) => cmp(p.id, q.id));
       if (hops.length === 0) return null;
       at = otherEnd(hops[0], at);
       if (this.net.byId.get(at)!.l3) r = true;

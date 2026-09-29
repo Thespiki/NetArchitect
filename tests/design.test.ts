@@ -18,17 +18,17 @@ import { miniLevel } from './helpers.ts';
 
 const none = new Set<SkillId>();
 
-describe('pose et câblage', () => {
-  it('numérote le matériel et refuse les cases occupées', () => {
+describe('placement and cabling', () => {
+  it('numbers hardware and refuses occupied cells', () => {
     const lvl = miniLevel();
     const d = emptyDesign();
     expect(placeDevice(lvl, d, 'switch8', 5, 5, none)).toMatchObject({ id: 'sw-1' });
     expect(placeDevice(lvl, d, 'switch24', 6, 5, none)).toMatchObject({ id: 'sw-2' });
-    expect(placeDevice(lvl, d, 'router', 5, 5, none)).toBe('Emplacement déjà occupé.');
-    expect(placeDevice(lvl, d, 'router', 2, 2, none)).toBe('Emplacement déjà occupé.');
+    expect(placeDevice(lvl, d, 'router', 5, 5, none)).toBe('This spot is already taken.');
+    expect(placeDevice(lvl, d, 'router', 2, 2, none)).toBe('This spot is already taken.');
   });
 
-  it('applique les règles de câblage', () => {
+  it('enforces the cabling rules', () => {
     const lvl = miniLevel();
     const d = emptyDesign();
     placeDevice(lvl, d, 'switch8', 5, 5, none);
@@ -38,24 +38,24 @@ describe('pose et câblage', () => {
       const c = canConnect(lvl, d, a, b, kind, none);
       return c.ok ? 'ok' : c.reason;
     };
-    expect(reason('a1', 'a2')).toMatch(/pas directement entre eux/);
+    expect(reason('a1', 'a2')).toMatch(/not directly/);
     expect(reason('lap', 'sw-1')).toMatch(/Wi-Fi/);
-    expect(reason('net', 'sw-1')).toMatch(/routeur \(NAT\)/);
+    expect(reason('net', 'sw-1')).toMatch(/router \(NAT\)/);
     expect(reason('net', 'rt-1')).toBe('ok');
-    expect(reason('ap-1', 'b1')).toMatch(/lien montant/);
-    expect(reason('sw-1', 'rt-1')).toMatch(/Trop long/);
+    expect(reason('ap-1', 'b1')).toMatch(/uplink/);
+    expect(reason('sw-1', 'rt-1')).toMatch(/Too long/);
     expect(reason('sw-1', 'rt-1', 'fiber')).toBe('ok');
   });
 
-  it('refuse le matériel verrouillé et le dépassement de budget', () => {
+  it('refuses locked hardware and going over budget', () => {
     const lvl = levelById('pixelbrew')!;
     const d = emptyDesign();
-    expect(placeDevice(lvl, d, 'switch_l3', 5, 5, none)).toMatch(/pas encore débloqué/);
+    expect(placeDevice(lvl, d, 'switch_l3', 5, 5, none)).toMatch(/not unlocked/);
     expect(placeDevice(lvl, d, 'switch_l3', 5, 5, new Set<SkillId>(['switch_l3']))).toMatchObject({ kind: 'switch_l3' });
-    expect(placeDevice(lvl, d, 'router', 6, 5, none)).toMatch(/Budget insuffisant/);
+    expect(placeDevice(lvl, d, 'router', 6, 5, none)).toMatch(/Not enough budget/);
   });
 
-  it('limite les ports', () => {
+  it('limits ports', () => {
     const lvl = miniLevel();
     const d = emptyDesign();
     placeDevice(lvl, d, 'router', 20, 5, none);
@@ -63,10 +63,10 @@ describe('pose et câblage', () => {
     for (let i = 0; i < 4; i++) connect(lvl, d, 'rt-1', 'sw-1', 'rj45', none);
     const c = canConnect(lvl, d, 'rt-1', 'sw-1', 'rj45', none);
     expect(c.ok).toBe(false);
-    expect(!c.ok && c.reason).toMatch(/plus de port libre \(4\/4\)/);
+    expect(!c.ok && c.reason).toMatch(/no free port \(4\/4\)/);
   });
 
-  it('câble automatiquement les postes de la pièce du switch', () => {
+  it('auto-cables the workstations in the switch’s room', () => {
     const lvl = miniLevel();
     const d = emptyDesign();
     placeDevice(lvl, d, 'switch8', 3, 5, none);
@@ -76,7 +76,7 @@ describe('pose et câblage', () => {
     expect(portsUsed(d, 'db')).toBe(0);
   });
 
-  it('calcule le coût et détecte les câbles devenus trop longs', () => {
+  it('computes the cost and detects cables that became too long', () => {
     const lvl = miniLevel();
     const d = emptyDesign();
     placeDevice(lvl, d, 'switch8', 5, 2, none);
@@ -91,7 +91,7 @@ describe('pose et câblage', () => {
 });
 
 describe('Wi-Fi', () => {
-  it('associe les portables à la borne la plus proche et signale les zones blanches', () => {
+  it('associates laptops with the nearest access point and reports dead zones', () => {
     const lvl = miniLevel();
     const d = emptyDesign();
     expect(buildNetwork(lvl, d).uncovered).toEqual(['lap']);

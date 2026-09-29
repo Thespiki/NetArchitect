@@ -1,5 +1,6 @@
-// Configuration logique : VLAN, sous-réseaux, pare-feu, répartition de charge, quarantaine.
+// Logical configuration: VLANs, subnets, firewall, load balancing, quarantine.
 
+import { allForms, T } from '../i18n/index.ts';
 import {
   blockSize,
   contains,
@@ -37,9 +38,9 @@ export interface RateLimit {
 }
 
 export interface NetConfig {
-  /** Groupe → identifiant de VLAN. */
+  /** Group → VLAN id. */
   vlans: Record<string, number>;
-  /** VLAN → sous-réseau CIDR (adressage manuel). */
+  /** VLAN → CIDR subnet (manual addressing). */
   subnets: Record<string, string>;
   rules: FwRule[];
   lb: Record<string, LbMode>;
@@ -71,7 +72,7 @@ export function cloneConfig(c: NetConfig): NetConfig {
   };
 }
 
-/** Complète une configuration sauvegardée avec les groupes/pools du niveau (robustesse). */
+/** Completes a saved configuration with the level's groups and pools (robustness). */
 export function normalizeConfig(level: LevelDef, c: NetConfig): NetConfig {
   const base = defaultConfig(level);
   return {
@@ -88,7 +89,7 @@ export function normalizeConfig(level: LevelDef, c: NetConfig): NetConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Adressage
+// Addressing
 
 export interface VlanStatus {
   vlan: number;
@@ -106,7 +107,7 @@ export interface Addressing {
   vlanOf: Map<string, number>;
   gateway: Map<number, number>;
   vlans: VlanStatus[];
-  /** Postes sans adresse IP (sous-réseau absent, invalide ou trop petit). */
+  /** Hosts without an IP address (subnet missing, invalid or too small). */
   missing: string[];
 }
 
@@ -170,8 +171,8 @@ export function computeAddressing(level: LevelDef, config: NetConfig): Addressin
     if (!raw) {
       parsed.set(v, null);
       st.ok = false;
-      st.error = 'Aucun sous-réseau attribué.';
-      st.hint = `Il faut au moins un /${prefixFor(hosts + 1)} (${hosts} hôtes + passerelle).`;
+      st.error = T.config.noSubnet;
+      st.hint = T.config.needAtLeast(prefixFor(hosts + 1), hosts);
       continue;
     }
     const c = parseCidr(raw);
@@ -179,7 +180,7 @@ export function computeAddressing(level: LevelDef, config: NetConfig): Addressin
     if (!c) {
       parsed.set(v, null);
       st.ok = false;
-      st.error = 'Format invalide. Exemple : 10.42.0.0/28';
+      st.error = T.config.badFormat;
       continue;
     }
     st.cidr = formatCidr(c);
@@ -187,20 +188,20 @@ export function computeAddressing(level: LevelDef, config: NetConfig): Addressin
     if (!isAligned(c)) {
       parsed.set(v, null);
       st.ok = false;
-      st.error = 'Adresse de réseau incorrecte (bits d’hôte non nuls).';
-      st.hint = `Adresse alignée la plus proche : ${formatCidr(networkOf(c))}`;
+      st.error = T.config.misaligned;
+      st.hint = T.config.nearest(formatCidr(networkOf(c)));
       continue;
     }
     if (block && !within(c, block)) {
       parsed.set(v, null);
       st.ok = false;
-      st.error = `Hors du bloc attribué par le FAI (${formatCidr(block)}).`;
+      st.error = T.config.outsideBlock(formatCidr(block));
       continue;
     }
     parsed.set(v, c);
   }
 
-  // Chevauchements entre sous-réseaux valides.
+  // Overlaps between valid subnets.
   for (let i = 0; i < vlans.length; i++) {
     for (let j = i + 1; j < vlans.length; j++) {
       const a = parsed.get(vlans[i]);
@@ -212,7 +213,7 @@ export function computeAddressing(level: LevelDef, config: NetConfig): Addressin
         ]) {
           const st = statuses.get(v)!;
           st.ok = false;
-          st.error = `Chevauche le sous-réseau du VLAN ${o}.`;
+          st.error = T.config.overlaps(o);
         }
       }
     }
@@ -232,10 +233,10 @@ export function computeAddressing(level: LevelDef, config: NetConfig): Addressin
     const slots = Math.max(0, usableHosts(c.prefix) - 1);
     if (list.length > slots) {
       st.ok = false;
-      st.error = `Trop petit : ${usableHosts(c.prefix)} adresses utilisables pour ${list.length + 1} (hôtes + passerelle).`;
-      st.hint = `Il faut au moins un /${prefixFor(list.length + 1)}.`;
+      st.error = T.config.tooSmall(usableHosts(c.prefix), list.length + 1);
+      st.hint = T.config.needPrefix(prefixFor(list.length + 1));
     }
-    // .1 = passerelle ; les hôtes suivent (à partir de .10 en DHCP automatique).
+    // .1 = gateway; hosts follow (from .10 with automatic DHCP).
     const first = manual ? 2 : 10;
     const last = c.base + blockSize(c.prefix) - 2;
     list.forEach((id, i) => {
@@ -248,14 +249,14 @@ export function computeAddressing(level: LevelDef, config: NetConfig): Addressin
   return { ipOf, vlanOf, gateway, vlans: vlans.map((v) => statuses.get(v)!), missing };
 }
 
-/** Script « Auto-VLAN & IPAM » : un VLAN par groupe et découpage VLSM du bloc. */
+/** "Auto-VLAN & IPAM" script: one VLAN per group and a VLSM split of the block. */
 export function autoPlan(level: LevelDef): { vlans: Record<string, number>; subnets: Record<string, string> } | string {
   const vlans: Record<string, number> = {};
   level.groups.forEach((g, i) => (vlans[g.id] = (i + 1) * 10));
   const subnets: Record<string, string> = {};
   if (level.addressing.mode !== 'manual') return { vlans, subnets };
   const block = parseCidr(level.addressing.block);
-  if (!block) return 'Bloc d’adresses du niveau invalide.';
+  if (!block) return T.config.badBlock;
   const needs = level.groups
     .map((g) => ({
       vlan: vlans[g.id],
@@ -267,7 +268,7 @@ export function autoPlan(level: LevelDef): { vlans: Record<string, number>; subn
   for (const n of needs) {
     const size = blockSize(n.prefix);
     cursor = Math.ceil(cursor / size) * size;
-    if (cursor + size > end) return 'Le bloc attribué est trop petit pour un VLAN par groupe.';
+    if (cursor + size > end) return T.config.blockTooSmall;
     subnets[String(n.vlan)] = `${formatIp(cursor)}/${n.prefix}`;
     cursor += size;
   }
@@ -275,7 +276,7 @@ export function autoPlan(level: LevelDef): { vlans: Record<string, number>; subn
 }
 
 // ---------------------------------------------------------------------------
-// Pare-feu
+// Firewall
 
 export type Selector =
   | { t: 'any' }
@@ -288,19 +289,19 @@ export type Selector =
 
 export function parseSelector(raw: string, level: LevelDef): Selector | { error: string } {
   const s = raw.trim().toLowerCase();
-  if (s === 'any' || s === '*' || s === 'tout' || s === 'tous') return { t: 'any' };
+  if (s === 'any' || s === '*' || s === 'all' || s === 'tout' || s === 'tous') return { t: 'any' };
   if (s === 'internet' || s === 'wan') return { t: 'internet' };
-  const group = level.groups.find((g) => g.id === s);
+  const group = level.groups.find((g) => g.id === s || g.aliases?.includes(s));
   if (group) return { t: 'group', id: group.id };
   const pool = level.endpoints.find((e) => e.pool === s);
   if (pool) return { t: 'pool', id: s };
   const vm = /^vlan[:\s-]?(\d{1,4})$/.exec(s);
   if (vm) return { t: 'vlan', v: Number(vm[1]) };
-  const host = level.endpoints.find((e) => e.id === s);
+  const host = level.endpoints.find((e) => e.id === s || allForms(e.label).includes(s));
   if (host) return host.kind === 'internet' ? { t: 'internet' } : { t: 'host', id: host.id };
   const c = parseCidr(s.includes('/') ? s : `${s}/32`);
   if (c) return { t: 'cidr', c: networkOf(c) };
-  return { error: `« ${raw} » inconnu. Utilise un groupe, un service, vlanN, un poste, internet, any ou une plage CIDR.` };
+  return { error: T.config.unknownSelector(raw) };
 }
 
 export function parseService(raw: string | undefined): { proto: RuleProto; port: number | null } | null {
@@ -315,14 +316,14 @@ export function parseService(raw: string | undefined): { proto: RuleProto; port:
 }
 
 export function formatService(proto: RuleProto, port: number | null): string {
-  if (proto === 'any' && port === null) return 'tout';
+  if (proto === 'any' && port === null) return T.config.serviceAll;
   if (port === null) return proto.toUpperCase();
   if (proto === 'any') return `port ${port}`;
   return `${proto.toUpperCase()}/${port}`;
 }
 
 export function formatRule(r: FwRule): string {
-  const verb = r.action === 'deny' ? 'BLOQUER' : 'AUTORISER';
+  const verb = r.action === 'deny' ? T.config.deny : T.config.allow;
   return `${verb} ${r.src} → ${r.dst} · ${formatService(r.proto, r.port)}`;
 }
 
@@ -372,7 +373,7 @@ export function selectorMatches(sel: Selector, id: string, ip: number, ctx: Matc
   }
 }
 
-/** Règles compilées : les sélecteurs sont analysés une seule fois. */
+/** Compiled rules: selectors are parsed only once. */
 export interface CompiledRule {
   rule: FwRule;
   src: Selector;
@@ -396,7 +397,7 @@ export function ruleMatches(r: CompiledRule, p: PacketHeader, ctx: MatchContext)
   return selectorMatches(r.src, p.src, p.srcIp, ctx) && selectorMatches(r.dst, p.dst, p.dstIp, ctx);
 }
 
-/** Première règle qui correspond ; par défaut tout est autorisé. */
+/** First matching rule; everything is allowed by default. */
 export function firstMatch(rules: CompiledRule[], p: PacketHeader, ctx: MatchContext): CompiledRule | null {
   for (const r of rules) if (ruleMatches(r, p, ctx)) return r;
   return null;

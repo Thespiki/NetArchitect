@@ -1,5 +1,6 @@
-// Panneau latéral : guide, objectifs, inspecteur, diagnostic, configuration et alertes.
+// Side panel: guide, objectives, inspector, diagnostics, configuration and alerts.
 
+import { loc, pct, pctN, T } from '../i18n/index.ts';
 import { CABLES, DEVICES, euros, gbps, meters, tempCelsius } from '../core/catalog.ts';
 import {
   cloneConfig,
@@ -11,7 +12,8 @@ import {
 import { cableCurrentCost, designCost, isEquipment, portsUsed, type Design } from '../core/design.ts';
 import type { Issue } from '../core/diagnostics.ts';
 import { formatIp, usableHosts } from '../core/ip.ts';
-import { groupName, hasFeature, roomAt, type GuideState, type LevelDef } from '../core/level.ts';
+import type { GuideState } from '../core/guide.ts';
+import { groupName, hasFeature, roomAt, type LevelDef } from '../core/level.ts';
 import type { NetNode, Network } from '../core/network.ts';
 import { objectiveLabel, starLabel } from '../core/objectives.ts';
 import type { Simulation } from '../core/simulation.ts';
@@ -46,18 +48,9 @@ export interface Card {
   update?: () => void;
 }
 
-const KIND_NAMES: Record<NodeKind, string> = {
-  workstation: 'Poste de travail',
-  laptop: 'Portable (Wi-Fi)',
-  server: 'Serveur',
-  internet: 'Arrivée opérateur (FAI)',
-  switch8: DEVICES.switch8.name,
-  switch24: DEVICES.switch24.name,
-  switch_l3: DEVICES.switch_l3.name,
-  router: DEVICES.router.name,
-  router_pro: DEVICES.router_pro.name,
-  ap: DEVICES.ap.name,
-};
+function kindName(kind: NodeKind): string {
+  return kind in DEVICES ? DEVICES[kind as keyof typeof DEVICES].name : T.catalog.kinds[kind as keyof typeof T.catalog.kinds];
+}
 
 export function glyphIcon(kind: NodeKind, size = 34, stroke = PAL.equipStroke): HTMLCanvasElement {
   const c = h('canvas', { class: 'glyph-icon', width: String(size * 2), height: String(size * 2), aria: { hidden: 'true' } });
@@ -71,8 +64,8 @@ export function glyphIcon(kind: NodeKind, size = 34, stroke = PAL.equipStroke): 
   return c;
 }
 
-function card(title: string, ...children: (Node | string | null | false | undefined)[]): HTMLElement {
-  return h('section', { class: 'card' }, h('h3', { class: 'card-title' }, title), ...children);
+function card(title: string, tut: string, ...children: (Node | string | null | false | undefined)[]): HTMLElement {
+  return h('section', { class: 'card', data: { tut } }, h('h3', { class: 'card-title' }, title), ...children);
 }
 
 function row(label: string, value: Node | string): HTMLElement[] {
@@ -80,7 +73,7 @@ function row(label: string, value: Node | string): HTMLElement[] {
 }
 
 // ---------------------------------------------------------------------------
-// Guide et conseils
+// Guide and tips
 
 export function guideCard(ctx: PanelCtx): Card | null {
   const steps = ctx.level.guide;
@@ -91,22 +84,22 @@ export function guideCard(ctx: PanelCtx): Card | null {
       let current = false;
       list.replaceChildren(
         ...steps.map((st) => {
-          const done = st.done(s);
+          const done = st.done?.(s) ?? false;
           const isCurrent = !done && !current;
           if (isCurrent) current = true;
-          return h('li', { class: done ? 'done' : isCurrent ? 'current' : '' }, st.text);
+          return h('li', { class: done ? 'done' : isCurrent ? 'current' : '' }, loc(st.text));
         }),
       );
     };
     update();
-    return { el: card('Guide de démarrage', list), update };
+    return { el: card(T.panels.guide, 'card-guide', list), update };
   }
   if (ctx.phase === 'live' || !ctx.level.tips.length) return null;
-  return { el: card('Conseils', h('ul', { class: 'tips' }, ...ctx.level.tips.map((t) => h('li', null, t)))) };
+  return { el: card(T.panels.tips, 'card-tips', h('ul', { class: 'tips' }, ...ctx.level.tips.map((t) => h('li', null, loc(t))))) };
 }
 
 // ---------------------------------------------------------------------------
-// Objectifs
+// Objectives
 
 export function objectivesCard(ctx: PanelCtx): Card {
   const list = h('ul', { class: 'objectives' });
@@ -118,29 +111,29 @@ export function objectivesCard(ctx: PanelCtx): Card {
       let live = '';
       let state: 'ok' | 'ko' | '' = '';
       if (sim) {
-        if (o.kind === 'survive') live = `frustration ${Math.round(sim.frustration)} %`;
+        if (o.kind === 'survive') live = T.panels.frustration(sim.frustration);
         if (o.kind === 'noBreach') {
-          live = `${sim.stats.breaches} brèche(s)`;
+          live = T.panels.breaches(sim.stats.breaches);
           state = sim.stats.breaches ? 'ko' : '';
         }
         if (o.kind === 'infected') {
-          live = `${sim.stats.infectedTotal}/${o.max} infecté(s)`;
+          live = T.panels.infected(sim.stats.infectedTotal, o.max);
           state = sim.stats.infectedTotal > o.max ? 'ko' : '';
         }
         if (o.kind === 'service') {
           const total = sim.stats.poolTotal[o.pool] ?? 0;
           const okN = sim.stats.poolOk[o.pool] ?? 0;
-          live = total ? `${Math.round((okN / total) * 100)} %` : '—';
+          live = total ? pct(okN / total) : '—';
         }
         if (o.kind === 'incidents') {
           const f = sim.incidents.filter((i) => i.kind === 'failure');
-          live = f.length ? `${f.filter((i) => i.resolved !== undefined && !i.missed).length}/${f.length}` : 'aucune panne';
+          live = f.length ? `${f.filter((i) => i.resolved !== undefined && !i.missed).length}/${f.length}` : T.panels.noFailure;
           state = f.some((i) => i.missed) ? 'ko' : '';
         }
       }
       items.push(h('li', { class: `obj ${state}` }, h('span', null, objectiveLabel(o, ctx.level)), live ? h('small', null, live) : null));
     }
-    items.push(h('li', { class: 'obj-sep' }, 'Étoiles bonus'));
+    items.push(h('li', { class: 'obj-sep' }, T.panels.bonusStars));
     for (const s of ctx.level.stars) {
       let live = '';
       let state: 'ok' | 'ko' | '' = '';
@@ -148,26 +141,26 @@ export function objectivesCard(ctx: PanelCtx): Card {
         live = euros(spent);
         state = spent <= s.max ? 'ok' : 'ko';
       } else if (sim && s.kind === 'avgFrustration') {
-        live = `${Math.round(sim.averageFrustration)} %`;
+        live = pctN(sim.averageFrustration);
         state = sim.averageFrustration <= s.max ? 'ok' : 'ko';
       } else if (sim && s.kind === 'lossRate') {
         const r = sim.stats.transactions ? sim.stats.failed / sim.stats.transactions : 0;
-        live = `${Math.round(r * 100)} %`;
+        live = pct(r);
         state = r <= s.max ? 'ok' : 'ko';
       } else if (sim && s.kind === 'mitigation') {
         const d = sim.incidents.filter((i) => i.kind === 'ddos');
-        live = d.length ? d.map((i) => (i.resolved !== undefined ? `${Math.round(i.resolved - i.start)} s` : 'en cours')).join(', ') : 'pas encore';
+        live = d.length ? d.map((i) => (i.resolved !== undefined ? `${Math.round(i.resolved - i.start)} s` : T.panels.inProgress)).join(', ') : T.panels.notYet;
       }
       items.push(h('li', { class: `obj star ${state}` }, h('span', null, `★ ${starLabel(s)}`), live ? h('small', null, live) : null));
     }
     list.replaceChildren(...items);
   };
   update();
-  return { el: card('Objectifs', list), update };
+  return { el: card(T.panels.objectives, 'card-objectives', list), update };
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostic
+// Diagnostics
 
 export function diagnosticsCard(ctx: PanelCtx): Card {
   const issues = ctx.issues;
@@ -185,15 +178,15 @@ export function diagnosticsCard(ctx: PanelCtx): Card {
           ),
         ),
       )
-    : h('p', { class: 'all-good' }, 'Aucun problème détecté : prêt pour la journée.');
-  return { el: card(`Diagnostic${issues.length ? ` · ${issues.length}` : ''}`, body) };
+    : h('p', { class: 'all-good' }, T.panels.allGood);
+  return { el: card(`${T.panels.diagnostics}${issues.length ? ` · ${issues.length}` : ''}`, 'card-diagnostics', body) };
 }
 
 // ---------------------------------------------------------------------------
-// Inspecteur
+// Inspector
 
 function nodeTitle(n: NetNode): HTMLElement {
-  return h('div', { class: 'insp-head' }, glyphIcon(n.kind), h('div', null, h('b', null, n.label), h('small', null, KIND_NAMES[n.kind])));
+  return h('div', { class: 'insp-head' }, glyphIcon(n.kind), h('div', null, h('b', null, n.label), h('small', null, kindName(n.kind))));
 }
 
 export function inspectorCard(ctx: PanelCtx): Card | null {
@@ -208,25 +201,26 @@ export function inspectorCard(ctx: PanelCtx): Card | null {
     const dl = h(
       'dl',
       { class: 'props' },
-      ...row('Relie', `${a.label} ↔ ${b.label}`),
-      ...row('Longueur', meters(l.length)),
-      ...row('Débit', gbps(l.capacity)),
-      ...(cable ? row('Coût', euros(cableCurrentCost(ctx.level, ctx.design, cable))) : []),
-      h('dt', null, 'Utilisation'),
+      ...row(T.panels.connects, `${a.label} ↔ ${b.label}`),
+      ...row(T.panels.length, meters(l.length)),
+      ...row(T.panels.bandwidth, gbps(l.capacity)),
+      ...(cable ? row(T.panels.cost, euros(cableCurrentCost(ctx.level, ctx.design, cable))) : []),
+      h('dt', null, T.panels.utilization),
       util,
     );
     const update = () => {
-      util.textContent = ctx.sim ? `${Math.round(ctx.sim.linkUtil(l.id) * 100)} %` : '— (journée non lancée)';
+      util.textContent = ctx.sim ? pct(ctx.sim.linkUtil(l.id)) : T.panels.notStarted;
     };
     update();
-    const title = l.kind === 'wifi' ? 'Liaison Wi-Fi' : CABLES[l.kind].name;
+    const title = l.kind === 'wifi' ? T.panels.wifiLink : CABLES[l.kind].name;
     return {
       el: card(
-        'Sélection',
-        h('div', { class: 'insp-head' }, h('div', null, h('b', null, title), h('small', null, l.broken ? 'Trop long : inactif' : 'Câble'))),
+        T.panels.selection,
+        'card-inspector',
+        h('div', { class: 'insp-head' }, h('div', null, h('b', null, title), h('small', null, l.broken ? T.panels.tooLongInactive : T.panels.cable))),
         dl,
         cable && ctx.phase !== 'live'
-          ? h('div', { class: 'actions' }, h('button', { class: 'btn danger small', type: 'button', on: { click: () => ctx.removeLink(l.id) } }, 'Supprimer le câble'))
+          ? h('div', { class: 'actions' }, h('button', { class: 'btn danger small', type: 'button', on: { click: () => ctx.removeLink(l.id) } }, T.panels.deleteCable))
           : null,
       ),
       update,
@@ -238,19 +232,20 @@ export function inspectorCard(ctx: PanelCtx): Card | null {
   const addr = computeAddressing(ctx.level, ctx.config);
   const room = roomAt(ctx.level, n.cell.x, n.cell.y);
   const props: HTMLElement[] = [];
-  props.push(...row('Pièce', room ? `${room.name}${room.kind === 'server' ? ' (climatisée)' : ''}` : 'Couloir'));
-  if (n.group) props.push(...row('Groupe', groupName(ctx.level, n.group)));
-  if (n.ports) props.push(...row('Ports', `${portsUsed(ctx.design, n.id)} / ${n.ports}`));
-  if (n.transit) props.push(...row('Débit', gbps(n.capacity)));
-  if (n.kind === 'server') props.push(...row('Capacité', `${n.capacity} requêtes/s`), ...row('Service', `${n.service!.proto.toUpperCase()}/${n.service!.port}`));
-  if (n.kind === 'internet') props.push(...row('Abonnement', gbps(n.isp ?? 0)));
-  if (n.wifi) props.push(...row('Wi-Fi', `${ctx.net.wifiClients.get(n.id)?.length ?? 0}/${n.wifi.clients} portables · portée ${meters(n.wifi.radius)}`));
+  const P = T.panels;
+  props.push(...row(P.room, room ? `${loc(room.name)}${room.kind === 'server' ? P.airConditioned : ''}` : P.corridor));
+  if (n.group) props.push(...row(P.group, groupName(ctx.level, n.group)));
+  if (n.ports) props.push(...row(P.ports, `${portsUsed(ctx.design, n.id)} / ${n.ports}`));
+  if (n.transit) props.push(...row(P.bandwidth, gbps(n.capacity)));
+  if (n.kind === 'server') props.push(...row(P.capacity, P.requestsPerSec(n.capacity)), ...row(P.service, `${n.service!.proto.toUpperCase()}/${n.service!.port}`));
+  if (n.kind === 'internet') props.push(...row(P.subscription, gbps(n.isp ?? 0)));
+  if (n.wifi) props.push(...row(P.wifi, P.wifiClients(ctx.net.wifiClients.get(n.id)?.length ?? 0, n.wifi.clients, meters(n.wifi.radius))));
   if (n.endpoint && n.kind !== 'internet') {
     const ip = addr.ipOf.get(n.id);
-    props.push(...row('VLAN', String(addr.vlanOf.get(n.id) ?? '—')), ...row('Adresse IP', ip === undefined ? 'aucune' : formatIp(ip)));
+    props.push(...row('VLAN', String(addr.vlanOf.get(n.id) ?? '—')), ...row(P.ipAddress, ip === undefined ? P.none : formatIp(ip)));
   }
-  if (n.kind === 'laptop' && ctx.net.uncovered.includes(n.id)) props.push(...row('Wi-Fi', 'hors couverture'));
-  if (n.l3) props.push(...row('Rôle', n.nat ? 'Routage, pare-feu, NAT' : 'Routage inter-VLAN, pare-feu'));
+  if (n.kind === 'laptop' && ctx.net.uncovered.includes(n.id)) props.push(...row(P.wifi, P.outOfRange));
+  if (n.l3) props.push(...row(P.role, n.nat ? P.roleNat : P.roleL3));
 
   const live = h('dl', { class: 'props live' });
   const actions = h('div', { class: 'actions' });
@@ -265,16 +260,21 @@ export function inspectorCard(ctx: PanelCtx): Card | null {
     const st = sim.states.get(n.id);
     if (!st) return;
     const rows: HTMLElement[] = [];
-    const state = st.down === 'failure' ? 'EN PANNE' : st.down === 'overheat' ? 'SURCHAUFFE' : st.quarantined ? 'EN QUARANTAINE' : st.infected ? 'INFECTÉ' : 'OK';
-    rows.push(...row('État', h('span', { class: state === 'OK' ? 'ok' : 'crit' }, state)));
+    const S = T.panels.states;
+    const state = st.down === 'failure' ? S.down : st.down === 'overheat' ? S.overheat : st.quarantined ? S.quarantined : st.infected ? S.infected : S.ok;
+    rows.push(...row(T.panels.state, h('span', { class: state === S.ok ? 'ok' : 'crit' }, state)));
     if (n.transit || n.kind === 'server') {
-      rows.push(...row('Charge', `${Math.round(Math.min(1, st.load) * 100)} %`), ...row('Température', `${tempCelsius(st.heat)} °C`), ...row('File', `${sim.queued(st)} paquet(s)`));
+      rows.push(
+        ...row(T.panels.load, pct(Math.min(1, st.load))),
+        ...row(T.panels.temperature, `${tempCelsius(st.heat)} °C`),
+        ...row(T.panels.queue, T.panels.packets(sim.queued(st))),
+      );
     }
     live.replaceChildren(...rows);
     if (n.l3 && hasFeature(ctx.level, 'firewall')) {
       const top = sim.topPorts().slice(0, 5);
       traffic.replaceChildren(
-        h('p', { class: 'mini-title' }, 'Trafic observé (paquets/s)'),
+        h('p', { class: 'mini-title' }, T.panels.observed),
         ...top.map((t) =>
           h(
             'div',
@@ -283,7 +283,7 @@ export function inspectorCard(ctx: PanelCtx): Card | null {
             h('span', null, String(t.pps)),
             t.key.endsWith('/443') || t.key.endsWith('/445')
               ? h('span', { class: 'muted' }, '—')
-              : h('button', { class: 'btn ghost tiny', type: 'button', on: { click: () => ctx.run(`block ${t.key.replace('/', ' ')}`) } }, 'Bloquer'),
+              : h('button', { class: 'btn ghost tiny', type: 'button', on: { click: () => ctx.run(`block ${t.key.replace('/', ' ')}`) } }, T.panels.block),
           ),
         ),
       );
@@ -295,23 +295,23 @@ export function inspectorCard(ctx: PanelCtx): Card | null {
     const btns: HTMLElement[] = [];
     if (!sim && ctx.phase !== 'live') {
       if (isEquipment(n.kind) && n.kind !== 'ap') {
-        btns.push(h('button', { class: 'btn primary small', type: 'button', on: { click: () => ctx.autoCable(n.id) } }, 'Câbler les postes proches'));
+        btns.push(h('button', { class: 'btn primary small', type: 'button', data: { tut: 'autocable' }, on: { click: () => ctx.autoCable(n.id) } }, T.panels.autoCable));
       }
       if (!n.fixed) {
         btns.push(
-          h('button', { class: 'btn danger small', type: 'button', on: { click: () => ctx.removeNode(n.id) } }, `Supprimer (+${euros(DEVICES[n.kind as keyof typeof DEVICES].cost)})`),
+          h('button', { class: 'btn danger small', type: 'button', on: { click: () => ctx.removeNode(n.id) } }, T.panels.deleteDevice(euros(DEVICES[n.kind as keyof typeof DEVICES].cost))),
         );
       }
     } else if (sim) {
       const st = sim.states.get(n.id);
       if (st?.down === 'failure' || (st && n.endpoint && (st.infected || st.quarantined))) {
-        btns.push(h('button', { class: 'btn primary small', type: 'button', on: { click: () => ctx.run(`dispatch ${n.id}`) } }, 'Envoyer un technicien'));
+        btns.push(h('button', { class: 'btn primary small', type: 'button', data: { tut: 'dispatch' }, on: { click: () => ctx.run(`dispatch ${n.id}`) } }, T.panels.sendTech));
       }
       if ((n.kind === 'workstation' || n.kind === 'laptop') && hasFeature(ctx.level, 'quarantine')) {
         btns.push(
           ctx.config.quarantine.includes(n.id)
-            ? h('button', { class: 'btn ghost small', type: 'button', on: { click: () => ctx.run(`release ${n.id}`) } }, 'Sortir de quarantaine')
-            : h('button', { class: 'btn danger small', type: 'button', on: { click: () => ctx.run(`quarantine ${n.id}`) } }, 'Isoler (quarantaine)'),
+            ? h('button', { class: 'btn ghost small', type: 'button', on: { click: () => ctx.run(`release ${n.id}`) } }, T.panels.release)
+            : h('button', { class: 'btn danger small', type: 'button', data: { tut: 'quarantine' }, on: { click: () => ctx.run(`quarantine ${n.id}`) } }, T.panels.isolate),
         );
       }
     }
@@ -320,7 +320,7 @@ export function inspectorCard(ctx: PanelCtx): Card | null {
   update();
   rebuildActions();
   return {
-    el: card('Sélection', nodeTitle(n), h('dl', { class: 'props' }, ...props), live, traffic, actions),
+    el: card(T.panels.selection, 'card-inspector', nodeTitle(n), h('dl', { class: 'props' }, ...props), live, traffic, actions),
     update: () => {
       update();
       rebuildActions();
@@ -341,7 +341,7 @@ function vlanSection(ctx: PanelCtx): HTMLElement {
     const addr = computeAddressing(lvl, ctx.config);
     if (!manual) {
       subnetsBox.replaceChildren(
-        h('p', { class: 'muted' }, 'Adressage automatique (DHCP) : chaque VLAN reçoit un /24 en 10.0.x.0. Rien à calculer ici.'),
+        h('p', { class: 'muted' }, T.panels.autoAddressing),
       );
       return;
     }
@@ -351,11 +351,11 @@ function vlanSection(ctx: PanelCtx): HTMLElement {
         id: `subnet-${v.vlan}`,
         type: 'text',
         value: ctx.config.subnets[String(v.vlan)] ?? '',
-        placeholder: 'ex. 10.42.0.16/29',
+        placeholder: T.panels.subnetPlaceholder,
         spellcheck: 'false',
-        aria: { label: `Sous-réseau du VLAN ${v.vlan}` },
+        aria: { label: T.panels.subnetAria(v.vlan) },
       });
-      const status = h('span', { class: `status ${v.ok ? 'ok' : 'ko'}` }, v.ok ? `✔ ${v.hosts} hôte(s), ${Math.max(0, v.usable - 1 - v.hosts)} libre(s)` : `✖ ${v.error}${v.hint ? ` ${v.hint}` : ''}`);
+      const status = h('span', { class: `status ${v.ok ? 'ok' : 'ko'}` }, v.ok ? T.panels.subnetOk(v.hosts, Math.max(0, v.usable - 1 - v.hosts)) : `✖ ${v.error}${v.hint ? ` ${v.hint}` : ''}`);
       input.addEventListener('change', () => {
         const next = cloneConfig(ctx.config);
         const val = input.value.trim();
@@ -373,16 +373,16 @@ function vlanSection(ctx: PanelCtx): HTMLElement {
       );
     });
     subnetsBox.replaceChildren(
-      h('p', { class: 'mini-title' }, `Sous-réseaux · bloc attribué ${lvl.addressing.mode === 'manual' ? lvl.addressing.block : ''}`),
+      h('p', { class: 'mini-title' }, T.panels.subnetsTitle(lvl.addressing.mode === 'manual' ? lvl.addressing.block : '')),
       ...rows,
-      h('p', { class: 'cheat' }, `/27 = ${usableHosts(27)} hôtes · /28 = ${usableHosts(28)} · /29 = ${usableHosts(29)} · /30 = ${usableHosts(30)} (passerelle comprise)`),
+      h('p', { class: 'cheat' }, T.panels.cheat(usableHosts(27), usableHosts(28), usableHosts(29), usableHosts(30))),
     );
   };
 
   const groupRows = lvl.groups.map((g) => {
     const members = lvl.endpoints.filter((e) => e.group === g.id);
     const count = members.length;
-    const unit = members.every((e) => e.kind === 'server') ? 'serveur' : 'poste';
+    const servers = members.every((e) => e.kind === 'server');
     const input = h('input', {
       class: 'vlan',
       id: `vlan-${g.id}`,
@@ -391,7 +391,7 @@ function vlanSection(ctx: PanelCtx): HTMLElement {
       max: '4094',
       value: String(ctx.config.vlans[g.id] ?? 1),
       disabled: !canVlan,
-      aria: { label: `VLAN de ${g.name}` },
+      aria: { label: T.panels.vlanAria(loc(g.name)) },
     });
     input.addEventListener('change', () => {
       const v = Math.round(Number(input.value));
@@ -407,18 +407,18 @@ function vlanSection(ctx: PanelCtx): HTMLElement {
     return h(
       'div',
       { class: 'vlan-row' },
-      h('label', { for: `vlan-${g.id}` }, h('i', { class: 'swatch', style: `--c:${g.color}` }), g.name, h('small', null, `${count} ${unit}${count > 1 ? 's' : ''}`)),
+      h('label', { for: `vlan-${g.id}` }, h('i', { class: 'swatch', style: `--c:${g.color}` }), loc(g.name), h('small', null, T.panels.members(count, servers))),
       input,
     );
   });
   renderSubnets();
   const auto = ctx.skills.has('autovlan') && canVlan
-    ? h('button', { class: 'btn ghost small', type: 'button', on: { click: () => ctx.run('autovlan') } }, 'Script Auto-VLAN & IPAM')
+    ? h('button', { class: 'btn ghost small', type: 'button', on: { click: () => ctx.run('autovlan') } }, T.panels.autoVlan)
     : null;
   return h(
     'div',
     { class: 'cfg-section' },
-    h('p', { class: 'mini-title' }, canVlan ? 'VLAN par groupe' : 'VLAN (disponible plus tard dans la campagne)'),
+    h('p', { class: 'mini-title' }, canVlan ? T.panels.vlanPerGroup : T.panels.vlanLater),
     ...groupRows,
     auto,
     subnetsBox,
@@ -428,11 +428,11 @@ function vlanSection(ctx: PanelCtx): HTMLElement {
 function selectorOptions(ctx: PanelCtx): { value: string; label: string }[] {
   const lvl = ctx.level;
   const opts = [
-    { value: 'any', label: 'Tout' },
-    { value: 'internet', label: 'Internet' },
+    { value: 'any', label: T.panels.any },
+    { value: 'internet', label: T.panels.internet },
   ];
-  for (const g of lvl.groups) opts.push({ value: g.id, label: `Groupe · ${g.name}` });
-  for (const pool of [...new Set(lvl.endpoints.filter((e) => e.pool).map((e) => e.pool!))]) opts.push({ value: pool, label: `Service · ${pool.toUpperCase()}` });
+  for (const g of lvl.groups) opts.push({ value: g.id, label: T.panels.groupOpt(loc(g.name)) });
+  for (const pool of [...new Set(lvl.endpoints.filter((e) => e.pool).map((e) => e.pool!))]) opts.push({ value: pool, label: T.panels.serviceOpt(pool.toUpperCase()) });
   for (const v of [...new Set(Object.values(ctx.config.vlans))].sort((a, b) => a - b)) opts.push({ value: `vlan${v}`, label: `VLAN ${v}` });
   return opts;
 }
@@ -450,12 +450,12 @@ function firewallSection(ctx: PanelCtx, compact = false): HTMLElement {
             { class: r.action },
             h('span', { class: 'rule-text' }, formatRule(r)),
             hits ? h('small', null, `${hits.get(r.id) ?? 0}`) : null,
-            i > 0 ? h('button', { class: 'icon-btn', type: 'button', title: 'Monter', aria: { label: 'Monter la règle' }, on: { click: () => ctx.run(`fw up ${i + 1}`) } }, '↑') : null,
-            h('button', { class: 'icon-btn', type: 'button', title: 'Supprimer', aria: { label: 'Supprimer la règle' }, on: { click: () => ctx.run(`fw del ${i + 1}`) } }, '✕'),
+            i > 0 ? h('button', { class: 'icon-btn', type: 'button', title: T.panels.moveUp, aria: { label: T.panels.moveUpAria }, on: { click: () => ctx.run(`fw up ${i + 1}`) } }, '↑') : null,
+            h('button', { class: 'icon-btn', type: 'button', title: T.panels.remove, aria: { label: T.panels.removeAria }, on: { click: () => ctx.run(`fw del ${i + 1}`) } }, '✕'),
           ),
         ),
       )
-    : h('p', { class: 'muted' }, 'Aucune règle : tout le trafic routé passe.');
+    : h('p', { class: 'muted' }, T.panels.noRules);
   const opts = selectorOptions(ctx);
   const sel = (id: string, label: string, def: string) =>
     h(
@@ -467,16 +467,17 @@ function firewallSection(ctx: PanelCtx, compact = false): HTMLElement {
         return opt;
       }),
     );
-  const action = h('select', { id: 'fw-action', aria: { label: 'Action' } }, h('option', { value: 'deny' }, 'Bloquer'), h('option', { value: 'allow' }, 'Autoriser'));
-  const src = sel('fw-src', 'Source', 'any');
-  const dst = sel('fw-dst', 'Destination', 'any');
-  const svc = h('input', { id: 'fw-svc', type: 'text', placeholder: 'tcp/445 (vide = tout)', spellcheck: 'false', aria: { label: 'Service' } });
-  const add = h('form', { class: 'rule-form' }, action, src, h('span', { class: 'arrow' }, '→'), dst, svc, h('button', { class: 'btn primary small', type: 'submit' }, 'Ajouter'));
+  const P = T.panels;
+  const action = h('select', { id: 'fw-action', aria: { label: P.action } }, h('option', { value: 'deny' }, P.deny), h('option', { value: 'allow' }, P.allow));
+  const src = sel('fw-src', P.source, 'any');
+  const dst = sel('fw-dst', P.destination, 'any');
+  const svc = h('input', { id: 'fw-svc', type: 'text', placeholder: P.servicePlaceholder, spellcheck: 'false', aria: { label: P.service } });
+  const add = h('form', { class: 'rule-form', data: { tut: 'fw-form' } }, action, src, h('span', { class: 'arrow' }, '→'), dst, svc, h('button', { class: 'btn primary small', type: 'submit' }, P.add));
   add.addEventListener('submit', (e) => {
     e.preventDefault();
     const s = svc.value.trim();
     if (s && !parseService(s)) {
-      svc.setCustomValidity('Exemples : tcp/445, udp/123, 443');
+      svc.setCustomValidity(P.serviceExamples);
       svc.reportValidity();
       return;
     }
@@ -484,14 +485,14 @@ function firewallSection(ctx: PanelCtx, compact = false): HTMLElement {
     ctx.run(`fw ${action.value} ${src.value} ${dst.value}${s ? ` ${s}` : ''}`);
   });
   const quick = h('form', { class: 'quick-block' });
-  const proto = h('select', { id: 'qb-proto', aria: { label: 'Protocole' } }, h('option', { value: 'udp' }, 'UDP'), h('option', { value: 'tcp' }, 'TCP'));
-  const port = h('input', { id: 'qb-port', type: 'number', min: '1', max: '65535', placeholder: 'port', aria: { label: 'Port' } });
-  const range = h('input', { id: 'qb-range', type: 'text', placeholder: 'plage, ex. 185.220.0.0/16', spellcheck: 'false', aria: { label: 'Plage d’adresses' } });
+  const proto = h('select', { id: 'qb-proto', aria: { label: P.protocol } }, h('option', { value: 'udp' }, 'UDP'), h('option', { value: 'tcp' }, 'TCP'));
+  const port = h('input', { id: 'qb-port', type: 'number', min: '1', max: '65535', placeholder: P.portPlaceholder, aria: { label: P.port } });
+  const range = h('input', { id: 'qb-range', type: 'text', placeholder: P.rangePlaceholder, spellcheck: 'false', aria: { label: P.range } });
   quick.append(
-    h('span', { class: 'mini-title' }, 'Bloquer vite'),
+    h('span', { class: 'mini-title' }, P.quickBlock),
     proto,
     port,
-    h('button', { class: 'btn danger small', type: 'submit' }, 'Port'),
+    h('button', { class: 'btn danger small', type: 'submit' }, P.port),
     range,
     h(
       'button',
@@ -504,7 +505,7 @@ function firewallSection(ctx: PanelCtx, compact = false): HTMLElement {
           },
         },
       },
-      'Plage',
+      P.rangeBtn,
     ),
   );
   quick.addEventListener('submit', (e) => {
@@ -514,8 +515,8 @@ function firewallSection(ctx: PanelCtx, compact = false): HTMLElement {
   return h(
     'div',
     { class: 'cfg-section' },
-    h('p', { class: 'mini-title' }, 'Pare-feu'),
-    h('p', { class: 'hint-line' }, 'Filtre le trafic routé (entre VLAN ou vers Internet). La première règle qui correspond s’applique.'),
+    h('p', { class: 'mini-title' }, P.firewall),
+    h('p', { class: 'hint-line' }, P.firewallHint),
     list,
     compact ? null : add,
     quick,
@@ -526,25 +527,25 @@ function lbSection(ctx: PanelCtx): HTMLElement | null {
   const pools = [...new Set(ctx.level.endpoints.filter((e) => e.pool).map((e) => e.pool!))];
   const multi = pools.filter((p) => ctx.level.endpoints.filter((e) => e.pool === p).length > 1);
   if (!multi.length) return null;
-  const names: Record<LbMode, string> = { none: 'Aucune (tout au premier serveur)', rr: 'Round-robin', least: 'Moins de connexions' };
+  const names: Record<LbMode, string> = T.panels.lbModes;
   return h(
     'div',
     { class: 'cfg-section' },
-    h('p', { class: 'mini-title' }, 'Répartition de charge'),
+    h('p', { class: 'mini-title' }, T.panels.loadBalancing),
     ...multi.map((p) => {
       const n = ctx.level.endpoints.filter((e) => e.pool === p).length;
       const select = h(
         'select',
-        { id: `lb-${p}`, aria: { label: `Répartition du pool ${p}` } },
+        { id: `lb-${p}`, data: { tut: `lb-${p}` }, aria: { label: T.panels.lbAria(p) } },
         ...(['none', 'rr', 'least'] as LbMode[]).map((m) => {
           const locked = m === 'least' && !ctx.skills.has('lb_least');
-          const opt = h('option', { value: m, disabled: locked }, `${names[m]}${locked ? ' (compétence)' : ''}`);
+          const opt = h('option', { value: m, disabled: locked }, `${names[m]}${locked ? T.panels.skillTag : ''}`);
           if ((ctx.config.lb[p] ?? 'none') === m) opt.selected = true;
           return opt;
         }),
       );
       select.addEventListener('change', () => ctx.run(`lb ${p} ${select.value}`));
-      return h('div', { class: 'vlan-row' }, h('label', { for: `lb-${p}` }, p.toUpperCase(), h('small', null, `${n} serveurs`)), select);
+      return h('div', { class: 'vlan-row' }, h('label', { for: `lb-${p}` }, p.toUpperCase(), h('small', null, T.panels.servers(n))), select);
     }),
   );
 }
@@ -560,21 +561,21 @@ export function configCard(ctx: PanelCtx): Card {
       h(
         'div',
         { class: 'cfg-section' },
-        h('p', null, 'Adressage automatique (DHCP) et aucune règle de sécurité exigée dans cette mission.'),
-        h('p', { class: 'muted' }, 'Teste quand même ton réseau depuis la console : ', h('code', null, 'ping pc-1 internet'), ' ou ', h('code', null, 'traceroute pc-1 nas'), '.'),
+        h('p', null, T.panels.nothingToConfigure),
+        h('p', { class: 'muted' }, T.panels.testAnyway, h('code', null, 'ping pc-1 internet'), T.panels.or, h('code', null, 'traceroute pc-1 nas'), '.'),
       ),
     );
   }
-  return { el: card('Configuration', ...parts) };
+  return { el: card(T.panels.configuration, 'card-config', ...parts) };
 }
 
 export function liveFirewallCard(ctx: PanelCtx): Card | null {
   if (!hasFeature(ctx.level, 'firewall')) return null;
-  return { el: card('Pare-feu en direct', firewallSection(ctx, true), lbSection(ctx)) };
+  return { el: card(T.panels.liveFirewall, 'card-firewall', firewallSection(ctx, true), lbSection(ctx)) };
 }
 
 // ---------------------------------------------------------------------------
-// Alertes en direct
+// Live alerts
 
 export function alertsCard(ctx: PanelCtx): Card {
   const list = h('ul', { class: 'alerts' });
@@ -595,19 +596,19 @@ export function alertsCard(ctx: PanelCtx): Card {
               e.action ? h('button', { class: 'btn primary tiny', type: 'button', on: { click: () => ctx.run(e.action!.cmd) } }, e.action.label) : null,
             ),
           )
-        : [h('li', { class: 'calm' }, 'Tout est calme… pour l’instant.')]),
+        : [h('li', { class: 'calm' }, T.panels.calm)]),
     );
   };
   update();
-  return { el: card('Alertes', list), update };
+  return { el: card(T.panels.alerts, 'card-alerts', list), update };
 }
 
 // ---------------------------------------------------------------------------
-// Pied de panneau : action principale de la phase
+// Panel footer: main action of the phase
 
 export function phaseFooter(ctx: PanelCtx): HTMLElement {
   if (ctx.phase === 'live') {
-    return h('div', { class: 'side-foot' }, h('button', { class: 'btn danger', type: 'button', on: { click: () => ctx.stop() } }, '■ Arrêter la journée'));
+    return h('div', { class: 'side-foot' }, h('button', { class: 'btn danger', type: 'button', on: { click: () => ctx.stop() } }, T.panels.stopDay));
   }
   const cost = designCost(ctx.level, ctx.design);
   const over = cost > ctx.level.budget;
@@ -615,8 +616,8 @@ export function phaseFooter(ctx: PanelCtx): HTMLElement {
     'div',
     { class: 'side-foot' },
     ctx.phase === 'build'
-      ? h('button', { class: 'btn ghost', type: 'button', on: { click: () => ctx.goPhase('config') } }, 'Configuration →')
-      : h('button', { class: 'btn ghost', type: 'button', on: { click: () => ctx.goPhase('build') } }, '← Architecture'),
-    h('button', { class: 'btn primary', type: 'button', disabled: over, title: over ? 'Budget dépassé' : '', on: { click: () => ctx.launch() } }, 'Lancer la journée ▶'),
+      ? h('button', { class: 'btn ghost', type: 'button', on: { click: () => ctx.goPhase('config') } }, T.panels.toConfig)
+      : h('button', { class: 'btn ghost', type: 'button', on: { click: () => ctx.goPhase('build') } }, T.panels.toBuild),
+    h('button', { class: 'btn primary', type: 'button', disabled: over, title: over ? T.panels.overBudget : '', data: { tut: 'launch' }, on: { click: () => ctx.launch() } }, T.panels.launch),
   );
 }

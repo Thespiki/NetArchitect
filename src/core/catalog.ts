@@ -1,19 +1,25 @@
-// Catalogue : matériel, câbles et types de trafic.
-// Unité interne de débit : « u/s ». 30 u/s = 1 Gb/s. Un paquet de taille 1 ≈ 33 Mb.
+// Catalog: hardware, cables and traffic types.
+// Internal throughput unit: "u/s". 30 u/s = 1 Gb/s. A packet of size 1 ≈ 33 Mb.
+// Display names are getters on the current dictionary, so they follow the language.
 
+import { num, T } from '../i18n/index.ts';
 import type { CableKind, EquipmentKind, Proto, SkillId, TrafficKind } from './types.ts';
 
+export { euros } from '../i18n/index.ts';
+
 export const UNITS_PER_GBPS = 30;
-/** Un pas de grille = 5 mètres. */
+/** One grid cell = 5 meters. */
 export const METERS_PER_CELL = 5;
 
 export interface DeviceSpec {
   kind: EquipmentKind;
-  name: string;
+  readonly name: string;
+  /** Short name for the toolbar. */
+  readonly short: string;
   prefix: string;
   cost: number;
   ports: number;
-  /** Débit de commutation/routage en u/s. */
+  /** Switching/routing throughput in u/s. */
   capacity: number;
   queue: number;
   l3: boolean;
@@ -21,13 +27,29 @@ export interface DeviceSpec {
   heat: number;
   wifi?: { radius: number; clients: number };
   skill?: SkillId;
-  desc: string;
+  readonly desc: string;
+}
+
+type DeviceData = Omit<DeviceSpec, 'name' | 'short' | 'desc'>;
+
+function device(d: DeviceData): DeviceSpec {
+  return {
+    ...d,
+    get name() {
+      return T.catalog.devices[d.kind].name;
+    },
+    get short() {
+      return T.catalog.devices[d.kind].short;
+    },
+    get desc() {
+      return T.catalog.devices[d.kind].desc;
+    },
+  };
 }
 
 export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
-  switch8: {
+  switch8: device({
     kind: 'switch8',
-    name: 'Switch 8 ports',
     prefix: 'SW',
     cost: 250,
     ports: 8,
@@ -36,11 +58,9 @@ export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
     l3: false,
     nat: false,
     heat: 1.0,
-    desc: 'Switch de niveau 2. Relie les postes d’un même VLAN.',
-  },
-  switch24: {
+  }),
+  switch24: device({
     kind: 'switch24',
-    name: 'Switch 24 ports',
     prefix: 'SW',
     cost: 650,
     ports: 24,
@@ -49,11 +69,9 @@ export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
     l3: false,
     nat: false,
     heat: 1.1,
-    desc: 'Switch d’étage de niveau 2, plus de ports et un fond de panier plus large.',
-  },
-  switch_l3: {
+  }),
+  switch_l3: device({
     kind: 'switch_l3',
-    name: 'Switch niveau 3',
     prefix: 'L3',
     cost: 1500,
     ports: 24,
@@ -63,11 +81,9 @@ export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
     nat: false,
     heat: 1.1,
     skill: 'switch_l3',
-    desc: 'Route entre VLAN et applique le pare-feu à pleine vitesse. Pas de NAT vers Internet.',
-  },
-  router: {
+  }),
+  router: device({
     kind: 'router',
-    name: 'Routeur PME',
     prefix: 'RT',
     cost: 700,
     ports: 4,
@@ -76,11 +92,9 @@ export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
     l3: true,
     nat: true,
     heat: 1.25,
-    desc: 'Route entre VLAN, filtre (pare-feu) et partage l’accès Internet (NAT).',
-  },
-  router_pro: {
+  }),
+  router_pro: device({
     kind: 'router_pro',
-    name: 'Routeur haute capacité',
     prefix: 'RT',
     cost: 1900,
     ports: 8,
@@ -90,11 +104,9 @@ export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
     nat: true,
     heat: 1.2,
     skill: 'router_pro',
-    desc: 'Routeur de cœur de réseau : trois fois le débit du modèle PME.',
-  },
-  ap: {
+  }),
+  ap: device({
     kind: 'ap',
-    name: 'Borne Wi-Fi',
     prefix: 'AP',
     cost: 220,
     ports: 1,
@@ -104,16 +116,17 @@ export const DEVICES: Record<EquipmentKind, DeviceSpec> = {
     nat: false,
     heat: 0.9,
     wifi: { radius: 6.5, clients: 8 },
-    desc: 'Connecte les portables à portée (≈ 30 m). Le débit radio est partagé.',
-  },
+  }),
 };
 
 export const EQUIPMENT_ORDER: EquipmentKind[] = ['switch8', 'switch24', 'router', 'ap', 'switch_l3', 'router_pro'];
 
 export interface CableSpec {
   kind: CableKind;
-  name: string;
-  short: string;
+  readonly name: string;
+  readonly short: string;
+  /** Toolbar label, e.g. "Fiber". */
+  readonly tool: string;
   capacity: number;
   base: number;
   perCell: number;
@@ -122,28 +135,41 @@ export interface CableSpec {
   skill?: SkillId;
 }
 
+type CableData = Omit<CableSpec, 'name' | 'short' | 'tool'>;
+
+function cable(c: CableData): CableSpec {
+  return {
+    ...c,
+    get name() {
+      return T.catalog.cables[c.kind].name;
+    },
+    get short() {
+      return T.catalog.cables[c.kind].short;
+    },
+    get tool() {
+      return T.catalog.cables[c.kind].tool;
+    },
+  };
+}
+
 export const CABLES: Record<CableKind, CableSpec> = {
-  rj45: {
+  rj45: cable({
     kind: 'rj45',
-    name: 'Câble RJ45 Cat6',
-    short: 'RJ45 · 1 Gb/s',
     capacity: 30,
     base: 20,
     perCell: 5,
     maxLen: 20,
     speed: 7,
-  },
-  fiber: {
+  }),
+  fiber: cable({
     kind: 'fiber',
-    name: 'Fibre optique OM4',
-    short: 'Fibre · 10 Gb/s',
     capacity: 300,
     base: 120,
     perCell: 12,
     maxLen: 100,
     speed: 9,
     skill: 'fiber',
-  },
+  }),
 };
 
 export const WIFI_LINK = { capacity: 15, speed: 6 };
@@ -153,7 +179,7 @@ export const INTERNET_DEFAULTS = { isp: 90, ports: 2 };
 
 export interface TrafficSpec {
   kind: TrafficKind;
-  label: string;
+  readonly label: string;
   color: string;
   proto: Proto;
   port: number;
@@ -162,20 +188,29 @@ export interface TrafficSpec {
   legit: boolean;
 }
 
+function traffic(t: Omit<TrafficSpec, 'label'>): TrafficSpec {
+  return {
+    ...t,
+    get label() {
+      return T.catalog.traffic[t.kind];
+    },
+  };
+}
+
 export const TRAFFIC: Record<TrafficKind, TrafficSpec> = {
-  web: { kind: 'web', label: 'Navigation web', color: '#3aa0ff', proto: 'tcp', port: 443, reqSize: 1, respSize: 2, legit: true },
-  stream: { kind: 'stream', label: 'Streaming vidéo', color: '#b26cff', proto: 'udp', port: 443, reqSize: 1, respSize: 4, legit: true },
-  data: { kind: 'data', label: 'Fichiers et applis internes', color: '#35e3a0', proto: 'tcp', port: 445, reqSize: 1, respSize: 3, legit: true },
-  customer: { kind: 'customer', label: 'Clients e-commerce', color: '#8fd3ff', proto: 'tcp', port: 443, reqSize: 1, respSize: 2, legit: true },
-  probe: { kind: 'probe', label: 'Sonde d’audit', color: '#ffab3d', proto: 'tcp', port: 445, reqSize: 1, respSize: 0, legit: false },
-  attack: { kind: 'attack', label: 'Trafic malveillant', color: '#ff3355', proto: 'udp', port: 123, reqSize: 1, respSize: 0, legit: false },
-  worm: { kind: 'worm', label: 'Ver informatique', color: '#ff3355', proto: 'tcp', port: 445, reqSize: 1, respSize: 0, legit: false },
+  web: traffic({ kind: 'web', color: '#3aa0ff', proto: 'tcp', port: 443, reqSize: 1, respSize: 2, legit: true }),
+  stream: traffic({ kind: 'stream', color: '#b26cff', proto: 'udp', port: 443, reqSize: 1, respSize: 4, legit: true }),
+  data: traffic({ kind: 'data', color: '#35e3a0', proto: 'tcp', port: 445, reqSize: 1, respSize: 3, legit: true }),
+  customer: traffic({ kind: 'customer', color: '#8fd3ff', proto: 'tcp', port: 443, reqSize: 1, respSize: 2, legit: true }),
+  probe: traffic({ kind: 'probe', color: '#ffab3d', proto: 'tcp', port: 445, reqSize: 1, respSize: 0, legit: false }),
+  attack: traffic({ kind: 'attack', color: '#ff3355', proto: 'udp', port: 123, reqSize: 1, respSize: 0, legit: false }),
+  worm: traffic({ kind: 'worm', color: '#ff3355', proto: 'tcp', port: 445, reqSize: 1, respSize: 0, legit: false }),
 };
 
-/** Couleur des paquets bloqués ou perdus. */
+/** Color of blocked or lost packets. */
 export const BLOCKED_COLOR = '#ff3355';
 
-/** Refroidissement par type de pièce : la salle serveurs est climatisée. */
+/** Cooling per room type: the server room is air-conditioned. */
 export const ROOM_COOLING: Record<string, number> = {
   office: 0.1,
   meeting: 0.1,
@@ -198,16 +233,11 @@ export function tempCelsius(heat: number): number {
 
 export function gbps(units: number): string {
   const v = units / UNITS_PER_GBPS;
-  const digits = v >= 10 ? 0 : 1;
-  return `${v.toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits })} Gb/s`;
+  return `${num(v, v >= 10 ? 0 : 1)} Gb/s`;
 }
 
 export function meters(cells: number): string {
   return `${Math.round(cells * METERS_PER_CELL)} m`;
-}
-
-export function euros(n: number): string {
-  return `${Math.round(n).toLocaleString('fr-FR')} €`;
 }
 
 export function cableCost(kind: CableKind, lengthCells: number): number {

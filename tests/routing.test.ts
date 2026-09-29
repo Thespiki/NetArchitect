@@ -10,7 +10,7 @@ import { miniLevel } from './helpers.ts';
 const none = new Set<SkillId>();
 const lvl = miniLevel();
 
-/** a1, a2, b1 sur SW-1 ; routeur RT-1 relié à SW-1, à la base de données et au FAI. */
+/** a1, a2, b1 on SW-1; router RT-1 linked to SW-1, the database and the ISP. */
 function star(withRouter = true): Design {
   const d = emptyDesign();
   placeDevice(lvl, d, 'switch24', 9, 6, none);
@@ -26,24 +26,24 @@ function star(withRouter = true): Design {
   return d;
 }
 
-describe('routage', () => {
-  it('commute le trafic d’un même VLAN sans passer par le routeur', () => {
+describe('routing', () => {
+  it('switches traffic within a VLAN without going through the router', () => {
     const net = buildNetwork(lvl, star());
     const r = new Routing(net, () => true);
     expect(r.path('a1', 'b1', true)).toEqual(['a1', 'sw-1', 'b1']);
   });
 
-  it('impose un niveau 3 entre deux VLAN', () => {
+  it('requires a layer 3 device between two VLANs', () => {
     const cfg = { ...defaultConfig(lvl), vlans: { ga: 10, gb: 20, srv: 99 } };
     const flat = probe(lvl, buildNetwork(lvl, star(false)), cfg, 'a1', 'db');
     expect(flat.ok).toBe(false);
-    expect(flat.lines.at(-1)).toMatch(/aucun équipement de niveau 3/);
+    expect(flat.lines.at(-1)).toMatch(/no layer 3 device/);
     const routed = probe(lvl, buildNetwork(lvl, star()), cfg, 'a1', 'db');
     expect(routed.ok).toBe(true);
     expect(routed.path).toEqual(['a1', 'sw-1', 'rt-1', 'db']);
   });
 
-  it('ne filtre que le trafic routé', () => {
+  it('only filters routed traffic', () => {
     const net = buildNetwork(lvl, star());
     const deny = { id: 1, action: 'deny' as const, src: 'ga', dst: 'db', proto: 'any' as const, port: null };
     const flat = { ...defaultConfig(lvl), rules: [deny] };
@@ -55,7 +55,7 @@ describe('routage', () => {
     expect(probe(lvl, net, split, 'b1', 'db').ok).toBe(true);
   });
 
-  it('répartit sur les liens parallèles (ECMP)', () => {
+  it('spreads over parallel links (ECMP)', () => {
     const d = star();
     connect(lvl, d, 'sw-1', 'rt-1', 'rj45', none);
     const net = buildNetwork(lvl, d);
@@ -63,7 +63,7 @@ describe('routage', () => {
     expect(r.nextHops('sw-1', 'net', false)).toHaveLength(2);
   });
 
-  it('contourne un équipement en panne par le chemin redondant', () => {
+  it('routes around a failed device through the redundant path', () => {
     const d = star();
     placeDevice(lvl, d, 'switch8', 9, 8, none);
     connect(lvl, d, 'sw-2', 'rt-1', 'rj45', none);

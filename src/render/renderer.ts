@@ -1,5 +1,6 @@
-// Rendu canvas : plan physique ⇄ vue topologique (morphing), paquets néon en mode additif.
+// Canvas rendering: floor plan ⇄ topology view (morph), neon packets in additive mode.
 
+import { loc, T } from '../i18n/index.ts';
 import { DEVICES, TRAFFIC, tempCelsius } from '../core/catalog.ts';
 import { portsUsed, type Design } from '../core/design.ts';
 import type { LevelDef } from '../core/level.ts';
@@ -127,7 +128,7 @@ export class Renderer {
   }
 
   // -------------------------------------------------------------------------
-  // Géométrie
+  // Geometry
 
   private geometry(inp: RenderInput): void {
     const e = inp.morph;
@@ -173,7 +174,7 @@ export class Renderer {
     return phys.map((p, i) => lerp(p, topo[i], e));
   }
 
-  /** Choisit le coude du câble (horizontal ou vertical d'abord) qui traverse le moins d'équipements. */
+  /** Picks the cable elbow (horizontal or vertical first) that crosses the fewest devices. */
   private verticalFirst(inp: RenderInput, l: NetLink): boolean {
     const cached = this.elbows.get(l);
     if (cached !== undefined) return cached;
@@ -204,6 +205,22 @@ export class Renderer {
     return this.pos.get(id);
   }
 
+  /** Screen rectangle (CSS pixels, canvas-relative) around a node, for highlights. */
+  nodeRect(id: string): { x: number; y: number; w: number; h: number } | null {
+    const p = this.pos.get(id);
+    const n = this.input?.net.byId.get(id);
+    if (!p || !n) return null;
+    const q = this.camera.toScreen(p.x, p.y);
+    const r = Math.max(14, (glyphRadius(n.kind) + 0.35) * this.camera.scale);
+    return { x: q.x - r, y: q.y - r, w: r * 2, h: r * 2 };
+  }
+
+  /** Screen rectangle of an area of the floor (in cells). */
+  areaRect(a: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } {
+    const q = this.camera.toScreen(a.x, a.y);
+    return { x: q.x, y: q.y, w: a.w * this.camera.scale, h: a.h * this.camera.scale };
+  }
+
   packetPos(p: Packet): Vec | null {
     if (!p.link) return null;
     const pts = this.polys.get(p.link.id);
@@ -212,7 +229,7 @@ export class Renderer {
   }
 
   // -------------------------------------------------------------------------
-  // Sélection à la souris
+  // Mouse picking
 
   pickNode(px: number, py: number): string | undefined {
     if (!this.input) return undefined;
@@ -279,7 +296,7 @@ export class Renderer {
   }
 
   // -------------------------------------------------------------------------
-  // Dessin
+  // Drawing
 
   render(inp: RenderInput): void {
     this.input = inp;
@@ -323,7 +340,7 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(140, 170, 220, 0.3)';
     ctx.lineWidth = 1.2;
     ctx.strokeRect(tl.x + 0.5, tl.y + 0.5, w * s, h * s);
-    // Trame de points aux intersections de la grille.
+    // Dot grid at the cell corners.
     if (s >= 12) {
       ctx.fillStyle = PAL.grid;
       for (let x = 1; x < w; x++) {
@@ -354,10 +371,11 @@ export class Renderer {
       ctx.fillStyle = r.kind === 'server' ? 'rgba(130, 190, 255, 0.8)' : PAL.roomLabel;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      const label = r.kind === 'server' ? `${r.name.toUpperCase()} · CLIMATISÉE` : r.name.toUpperCase();
+      const name = loc(r.name).toUpperCase();
+      const label = r.kind === 'server' ? `${name} · ${T.map.airConditioned}` : name;
       ctx.fillText(label, p.x + fs * 0.6, p.y + fs * 0.5, r.w * s - fs);
     }
-    // Poste du technicien.
+    // Technician base.
     const base = this.sc({ x: inp.level.techBase.x + 0.5, y: inp.level.techBase.y + 0.5 });
     ctx.strokeStyle = 'rgba(255, 200, 110, 0.35)';
     ctx.setLineDash([3, 3]);
@@ -377,7 +395,7 @@ export class Renderer {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     const p = this.sc({ x: 0.3, y: this.input!.level.size.h - 0.2 });
-    ctx.fillText('VUE TOPOLOGIQUE', p.x, p.y);
+    ctx.fillText(T.map.topology, p.x, p.y);
     ctx.restore();
   }
 
@@ -570,7 +588,7 @@ export class Renderer {
       const isEquip = n.transit;
       const stroke = n.kind === 'internet' ? INTERNET_COLOR : isEquip ? PAL.equipStroke : (groupColor.get(n.group ?? '') ?? PAL.equipStroke);
 
-      // Halo de chaleur.
+      // Heat halo.
       if (st && st.heat > 0.5 && st.up) {
         const hot = Math.min(1, (st.heat - 0.5) / 0.5);
         const pulse = hot > 0.7 && !inp.reducedMotion ? 0.7 + 0.3 * Math.sin(inp.now * 10) : 1;
@@ -591,7 +609,7 @@ export class Renderer {
         alpha: dimmed ? 0.7 : 1,
       });
 
-      // Anneau de charge.
+      // Load ring.
       if (st && st.up && (n.transit || n.kind === 'server') && st.load > 0.04) {
         const ring = R + s * 0.16;
         ctx.save();
@@ -618,7 +636,7 @@ export class Renderer {
         ctx.moveTo(q.x + k, q.y - k);
         ctx.lineTo(q.x - k, q.y + k);
         ctx.stroke();
-        this.tag(q.x, q.y - R - s * 0.3, st.down === 'overheat' ? 'SURCHAUFFE' : 'EN PANNE', st.down === 'overheat' ? PAL.warn : PAL.crit);
+        this.tag(q.x, q.y - R - s * 0.3, st.down === 'overheat' ? T.map.overheat : T.map.down, st.down === 'overheat' ? PAL.warn : PAL.crit);
         ctx.restore();
       }
       if (st?.infected && !st.quarantined) {
@@ -640,7 +658,7 @@ export class Renderer {
         ctx.arc(q.x, q.y, R + s * 0.2, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
-        this.tag(q.x, q.y - R - s * 0.3, st.infected ? 'ISOLÉ · INFECTÉ' : 'ISOLÉ', st.infected ? PAL.crit : PAL.dim);
+        this.tag(q.x, q.y - R - s * 0.3, st.infected ? T.map.isolatedInfected : T.map.isolated, st.infected ? PAL.crit : PAL.dim);
       }
       if (!sim && inp.warnNodes.has(n.id)) {
         const pulse = inp.reducedMotion ? 1 : 0.55 + 0.45 * Math.sin(inp.now * 3);
@@ -734,7 +752,7 @@ export class Renderer {
           ctx.stroke();
           if (e.kind === 'breach' || e.kind === 'fixed') {
             ctx.globalAlpha = 1 - k;
-            this.tag(q.x, q.y - s * (1 + k * 0.8), e.kind === 'breach' ? 'BRÈCHE' : 'RÉPARÉ', color);
+            this.tag(q.x, q.y - s * (1 + k * 0.8), e.kind === 'breach' ? T.map.breach : T.map.fixed, color);
             ctx.globalAlpha = 1;
           }
           break;
@@ -875,7 +893,7 @@ export class Renderer {
     const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
     const free = (x0: number, x1: number, y0: number, y1: number) =>
       placed.every((r) => x1 < r.x0 || x0 > r.x1 || y1 < r.y0 || y0 > r.y1);
-    // Les étiquettes survolées ou sélectionnées passent en premier, puis l'équipement actif.
+    // Hovered or selected labels go first, then active equipment.
     const order = [...inp.net.nodes].sort((a, b) => {
       const fa = inp.hover.node === a.id || inp.selected.node === a.id ? 0 : a.transit ? 1 : 2;
       const fb = inp.hover.node === b.id || inp.selected.node === b.id ? 0 : b.transit ? 1 : 2;

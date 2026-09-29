@@ -1,5 +1,6 @@
-// Objectifs de mission et calcul des étoiles.
+// Mission objectives and star rating.
 
+import { pct, T } from '../i18n/index.ts';
 import { euros } from './catalog.ts';
 import type { LevelDef, ObjectiveDef, StarDef } from './level.ts';
 import type { Simulation } from './simulation.ts';
@@ -26,16 +27,16 @@ export interface MissionResult {
 export function objectiveLabel(o: ObjectiveDef, level: LevelDef): string {
   switch (o.kind) {
     case 'survive':
-      return 'Tenir la journée sans que la frustration atteigne 100 %';
+      return T.objectives.survive;
     case 'noBreach':
-      return 'Aucune brèche : toutes les sondes d’audit doivent être bloquées';
+      return T.objectives.noBreach;
     case 'incidents':
-      return 'Réparer chaque panne matérielle dans le délai imparti';
+      return T.objectives.incidents;
     case 'infected':
-      return `Contenir le ver : ${o.max} postes infectés au maximum`;
+      return T.objectives.infected(o.max);
     case 'service': {
       const name = level.endpoints.find((e) => e.pool === o.pool)?.pool?.toUpperCase() ?? o.pool;
-      return `Service ${name} disponible pour au moins ${Math.round(o.min * 100)} % des requêtes`;
+      return T.objectives.service(name, o.min);
     }
   }
 }
@@ -43,18 +44,14 @@ export function objectiveLabel(o: ObjectiveDef, level: LevelDef): string {
 export function starLabel(s: StarDef): string {
   switch (s.kind) {
     case 'avgFrustration':
-      return `Frustration moyenne ≤ ${s.max} %`;
+      return T.objectives.starFrustration(s.max);
     case 'spent':
-      return `Dépenser au plus ${euros(s.max)}`;
+      return T.objectives.starSpent(s.max);
     case 'mitigation':
-      return `Neutraliser chaque attaque en moins de ${s.max} s`;
+      return T.objectives.starMitigation(s.max);
     case 'lossRate':
-      return `Moins de ${Math.round(s.max * 100)} % de requêtes perdues`;
+      return T.objectives.starLoss(s.max);
   }
-}
-
-function pct(x: number): string {
-  return `${Math.round(x * 100)} %`;
 }
 
 export function evaluate(level: LevelDef, sim: Simulation, spent: number): MissionResult {
@@ -67,26 +64,26 @@ export function evaluate(level: LevelDef, sim: Simulation, spent: number): Missi
         return {
           label,
           ok: !sim.failed,
-          detail: sim.failed ? `Abandon à ${sim.clock}` : `Pic à ${Math.round(st.peakFrustration)} %`,
+          detail: sim.failed ? T.objectives.gaveUp(sim.clock) : T.objectives.peak(st.peakFrustration),
         };
       case 'noBreach':
         return {
           label,
           ok: st.breaches === 0,
-          detail: `${st.breaches} brèche(s), ${st.probesBlocked}/${st.probes} sondes bloquées`,
+          detail: T.objectives.breaches(st.breaches, st.probesBlocked, st.probes),
         };
       case 'incidents': {
         const fails = sim.incidents.filter((i) => i.kind === 'failure');
         const ok = fails.every((i) => i.resolved !== undefined && !i.missed);
         const done = fails.filter((i) => i.resolved !== undefined && !i.missed).length;
-        return { label, ok, detail: fails.length ? `${done}/${fails.length} dans les délais` : 'Aucune panne' };
+        return { label, ok, detail: fails.length ? T.objectives.onTime(done, fails.length) : T.objectives.noFailure };
       }
       case 'infected':
-        return { label, ok: st.infectedTotal <= o.max, detail: `${st.infectedTotal} poste(s) infecté(s)` };
+        return { label, ok: st.infectedTotal <= o.max, detail: T.objectives.infectedCount(st.infectedTotal) };
       case 'service': {
         const total = st.poolTotal[o.pool] ?? 0;
         const rate = total ? (st.poolOk[o.pool] ?? 0) / total : 0;
-        return { label, ok: total > 0 && rate >= o.min, detail: `${pct(rate)} de ${total} requêtes` };
+        return { label, ok: total > 0 && rate >= o.min, detail: T.objectives.ofRequests(pct(rate), total) };
       }
     }
   });
@@ -96,7 +93,7 @@ export function evaluate(level: LevelDef, sim: Simulation, spent: number): Missi
     const label = starLabel(s);
     switch (s.kind) {
       case 'avgFrustration':
-        return { label, ok: sim.averageFrustration <= s.max, detail: `${Math.round(sim.averageFrustration)} %` };
+        return { label, ok: sim.averageFrustration <= s.max, detail: pct(sim.averageFrustration / 100) };
       case 'spent':
         return { label, ok: spent <= s.max, detail: euros(spent) };
       case 'mitigation': {
@@ -105,7 +102,7 @@ export function evaluate(level: LevelDef, sim: Simulation, spent: number): Missi
         return {
           label,
           ok: worst <= s.max,
-          detail: !times.length ? 'Aucune attaque' : worst === Infinity ? 'Attaque non neutralisée' : `${Math.round(worst)} s`,
+          detail: !times.length ? T.objectives.noAttack : worst === Infinity ? T.objectives.notStopped : `${Math.round(worst)} s`,
         };
       }
       case 'lossRate':
@@ -121,7 +118,7 @@ export function evaluate(level: LevelDef, sim: Simulation, spent: number): Missi
     stars,
     objectives,
     starRules,
-    failReason: sim.failed ? sim.failReason : failed ? `Objectif manqué : ${failed.label.toLowerCase()}.` : '',
+    failReason: sim.failed ? sim.failReason : failed ? T.objectives.missed(failed.label) : '',
     spent,
     avgFrustration: sim.averageFrustration,
     peakFrustration: st.peakFrustration,

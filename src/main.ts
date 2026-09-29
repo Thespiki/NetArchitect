@@ -13,7 +13,7 @@ const hot = (window as unknown as { claude?: { hot?: Hot } }).claude?.hot;
 function start(data: unknown): void {
   const root = document.getElementById('app')!;
   const app = new App(root);
-  // Accès depuis la console du navigateur (débogage, tests de bout en bout).
+  // Reachable from the browser console (debugging, end-to-end tests).
   (window as unknown as { netarchitect: App }).netarchitect = app;
   hot?.snapshot?.(() => app.snapshot());
   const route = (data as { route?: string } | undefined)?.route;

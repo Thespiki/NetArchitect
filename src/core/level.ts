@@ -1,12 +1,15 @@
-// Format des missions : plan de l'étage, postes fixes, trafic, événements et objectifs.
+// Mission format: floor plan, fixed endpoints, traffic, events and objectives.
+// Player-facing texts are `Loc` values, written in every supported language.
 
-import type { CableKind, EndpointKind, EquipmentKind, Feature, Phase, Proto, Vec } from './types.ts';
+import { loc, T, type Loc } from '../i18n/index.ts';
+import type { CoachTip, GuideStep } from './guide.ts';
+import type { CableKind, EndpointKind, EquipmentKind, Feature, Proto, Vec } from './types.ts';
 
 export type RoomKind = 'office' | 'server' | 'meeting' | 'it' | 'lobby';
 
 export interface RoomDef {
   id: string;
-  name: string;
+  name: Loc;
   kind: RoomKind;
   x: number;
   y: number;
@@ -16,8 +19,10 @@ export interface RoomDef {
 
 export interface GroupDef {
   id: string;
-  name: string;
+  name: Loc;
   color: string;
+  /** Other identifiers accepted by the console (e.g. a translated name). */
+  aliases?: string[];
 }
 
 export interface EndpointDef {
@@ -26,23 +31,23 @@ export interface EndpointDef {
   x: number;
   y: number;
   group?: string;
-  /** Serveurs : pool de service (plusieurs serveurs peuvent partager un pool). */
+  /** Servers: service pool (several servers can share a pool). */
   pool?: string;
-  label?: string;
-  /** Serveurs : requêtes traitées par seconde. */
+  label?: Loc;
+  /** Servers: requests handled per second. */
   capacity?: number;
-  /** Internet : débit de l'abonnement opérateur (u/s). */
+  /** Internet: bandwidth of the ISP subscription (u/s). */
   isp?: number;
-  /** Serveurs : protocole/port du service. */
+  /** Servers: protocol/port of the service. */
   proto?: Proto;
   port?: number;
 }
 
 export interface GroupTraffic {
-  /** Requêtes par seconde et par poste au pic de la journée. */
+  /** Requests per second and per computer at the peak of the day. */
   rate: number;
   mix: Partial<Record<'web' | 'stream' | 'data', number>>;
-  /** Pools internes visés par le trafic « data ». */
+  /** Internal pools targeted by "data" traffic. */
   data?: string[];
 }
 
@@ -52,16 +57,16 @@ export interface TrafficDef {
   curve: 'office' | 'shop';
 }
 
-/** Sondes d'audit de sécurité : tentatives d'accès interdites qui doivent être bloquées. */
+/** Security audit probes: forbidden access attempts that must be blocked. */
 export interface AuditDef {
   from: string;
   to: string;
   rate: number;
-  label: string;
+  label: Loc;
 }
 
 export type EventDef =
-  | { kind: 'peak'; at: number; duration: number; factor: number; target: 'all' | 'customers' | 'stream'; message: string }
+  | { kind: 'peak'; at: number; duration: number; factor: number; target: 'all' | 'customers' | 'stream'; message: Loc }
   | {
       kind: 'ddos';
       at: number;
@@ -72,7 +77,7 @@ export type EventDef =
       proto: Proto;
       port: number;
       sources: string;
-      name: string;
+      name: Loc;
     }
   | { kind: 'failure'; at: number; target: string; deadline: number }
   | { kind: 'worm'; at: number; patient: string; rate: number; chance: number };
@@ -90,35 +95,22 @@ export type StarDef =
   | { kind: 'mitigation'; max: number }
   | { kind: 'lossRate'; max: number };
 
-/** État minimal exposé aux étapes du tutoriel. */
-export interface GuideState {
-  phase: Phase;
-  devices: { id: string; kind: EquipmentKind; x: number; y: number }[];
-  cables: { a: string; b: string }[];
-  running: boolean;
-}
-
-export interface GuideStep {
-  text: string;
-  done: (s: GuideState) => boolean;
-}
-
 export interface LevelDef {
   id: string;
+  /** 0 is the training mission; the campaign starts at 1. */
   order: number;
   company: string;
-  title: string;
-  rank: string;
-  tagline: string;
-  brief: string[];
-  newMechanics: { title: string; text: string }[];
+  title: Loc;
+  tagline: Loc;
+  brief: Loc[];
+  newMechanics: { title: Loc; text: Loc }[];
   size: { w: number; h: number };
   rooms: RoomDef[];
   groups: GroupDef[];
   endpoints: EndpointDef[];
   techBase: Vec;
   budget: number;
-  /** Durée réelle (s) de la journée 9 h → 18 h à vitesse ×1. */
+  /** Real-time length (s) of the 9:00 → 18:00 day at ×1 speed. */
   dayLength: number;
   features: Feature[];
   equipment: EquipmentKind[];
@@ -129,8 +121,13 @@ export interface LevelDef {
   events?: EventDef[];
   objectives: ObjectiveDef[];
   stars: StarDef[];
-  tips: string[];
+  tips: Loc[];
+  /** Checklist shown in the side panel. */
   guide?: GuideStep[];
+  /** Step-by-step walkthrough with highlights (training mission). */
+  tutorial?: GuideStep[];
+  /** Hints that pop up when a situation first occurs. */
+  coach?: CoachTip[];
   seed: number;
 }
 
@@ -140,14 +137,20 @@ export function roomAt(level: LevelDef, x: number, y: number): RoomDef | undefin
 
 export function groupName(level: LevelDef, id: string | undefined): string {
   if (!id) return '—';
-  return level.groups.find((g) => g.id === id)?.name ?? id;
+  const g = level.groups.find((x) => x.id === id);
+  return g ? loc(g.name) : id;
+}
+
+/** Career rank attached to a mission (the training mission is the intern's). */
+export function rankName(order: number): string {
+  return T.ranks[Math.max(0, Math.min(order, T.ranks.length - 1))];
 }
 
 export function hasFeature(level: LevelDef, f: Feature): boolean {
   return level.features.includes(f);
 }
 
-/** Heure affichée pour une fraction de journée (0 → 9:00, 1 → 18:00). */
+/** Displayed time for a fraction of the day (0 → 9:00, 1 → 18:00). */
 export function clockLabel(fraction: number): string {
   const minutes = Math.round(9 * 60 + Math.min(1, Math.max(0, fraction)) * 9 * 60);
   const h = Math.floor(minutes / 60);

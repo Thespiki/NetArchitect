@@ -1,4 +1,4 @@
-// Générateur pseudo-aléatoire déterministe (mulberry32) : une même graine rejoue la même journée.
+// Deterministic pseudo-random generator (mulberry32): the same seed replays the same day.
 
 export class Rng {
   private s: number;
@@ -31,7 +31,7 @@ export class Rng {
     return this.next() < p;
   }
 
-  /** Tirage pondéré : renvoie la clé choisie. */
+  /** Weighted draw: returns the chosen key. */
   weighted<K extends string>(weights: Partial<Record<K, number>>): K | null {
     let total = 0;
     for (const k in weights) total += weights[k] ?? 0;

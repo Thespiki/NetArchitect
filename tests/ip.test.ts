@@ -13,7 +13,7 @@ import {
 } from '../src/core/ip.ts';
 
 describe('IPv4', () => {
-  it('analyse et formate les adresses', () => {
+  it('parses and formats addresses', () => {
     expect(formatIp(parseIp('10.42.0.17')!)).toBe('10.42.0.17');
     expect(parseIp('255.255.255.255')).toBe(0xffffffff);
     expect(parseIp('10.0.0')).toBeNull();
@@ -21,19 +21,19 @@ describe('IPv4', () => {
     expect(parseIp('a.b.c.d')).toBeNull();
   });
 
-  it('analyse les CIDR', () => {
+  it('parses CIDR blocks', () => {
     expect(formatCidr(parseCidr('10.42.0.16/29')!)).toBe('10.42.0.16/29');
     expect(parseCidr('10.42.0.16/33')).toBeNull();
     expect(parseCidr('10.42.0.16')).toBeNull();
   });
 
-  it('vérifie l’alignement et propose l’adresse de réseau', () => {
+  it('checks alignment and suggests the network address', () => {
     expect(isAligned(parseCidr('10.42.0.16/28')!)).toBe(true);
     expect(isAligned(parseCidr('10.42.0.8/28')!)).toBe(false);
     expect(formatCidr(networkOf(parseCidr('10.42.0.8/28')!))).toBe('10.42.0.0/28');
   });
 
-  it('compte les hôtes utilisables', () => {
+  it('counts usable hosts', () => {
     expect(usableHosts(24)).toBe(254);
     expect(usableHosts(28)).toBe(14);
     expect(usableHosts(29)).toBe(6);
@@ -43,7 +43,7 @@ describe('IPv4', () => {
     expect(prefixFor(6)).toBe(29);
   });
 
-  it('détecte chevauchements et inclusions', () => {
+  it('detects overlaps and inclusions', () => {
     const block = parseCidr('10.42.0.0/27')!;
     expect(within(parseCidr('10.42.0.24/29')!, block)).toBe(true);
     expect(within(parseCidr('10.42.0.32/29')!, block)).toBe(false);

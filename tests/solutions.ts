@@ -1,5 +1,5 @@
-// Solutions de référence : prouvent que chaque mission se gagne avec le matériel de base
-// (aucune compétence), et servent de banc d'essai pour l'équilibrage.
+// Reference solutions: they prove that every mission can be won with the basic hardware
+// (no skills), and serve as a test bench for balancing.
 
 import { defaultConfig, type NetConfig } from '../src/core/config.ts';
 import { execute } from '../src/core/console.ts';
@@ -18,20 +18,33 @@ export interface Solution {
   skills?: SkillId[];
 }
 
-/** Déclenche une commande `delay` secondes après le début d'un événement du niveau. */
+/** Runs a command `delay` seconds after the start of a level event. */
 function after(level: LevelDef, kind: string, delay: number, cmd: string): ScriptStep {
   const ev = level.events!.find((e) => e.kind === kind)!;
   return { at: ev.at * level.dayLength + delay, cmd };
 }
 
 export const SOLUTIONS: Record<string, (level: LevelDef) => Solution> = {
+  training: () => ({
+    devices: [
+      ['router', 13, 2],
+      ['switch8', 5, 5],
+    ],
+    cables: [
+      ['isp', 'rt-1'],
+      ['rt-1', 'sw-1'],
+      ['rt-1', 'nas'],
+    ],
+    auto: ['sw-1'],
+  }),
+
   pixelbrew: () => ({
     devices: [
       ['router', 17, 3],
       ['switch8', 6, 5],
     ],
     cables: [
-      ['fai', 'rt-1'],
+      ['isp', 'rt-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'nas'],
     ],
@@ -45,8 +58,8 @@ export const SOLUTIONS: Record<string, (level: LevelDef) => Solution> = {
       ['ap', 15, 13],
     ],
     cables: [
-      ['fai', 'rt-1'],
-      ['fai', 'rt-1'],
+      ['isp', 'rt-1'],
+      ['isp', 'rt-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-1'],
       ['sw-1', 'nas'],
@@ -63,7 +76,7 @@ export const SOLUTIONS: Record<string, (level: LevelDef) => Solution> = {
       ['switch8', 26, 4],
     ],
     cables: [
-      ['fai', 'rt-1'],
+      ['isp', 'rt-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-2'],
@@ -74,12 +87,12 @@ export const SOLUTIONS: Record<string, (level: LevelDef) => Solution> = {
     auto: ['sw-1'],
     configure: [
       'vlan rnd 20',
-      'vlan compta 10',
+      'vlan acct 10',
       'vlan srv 99',
       'subnet 20 10.42.0.0/28',
       'subnet 10 10.42.0.16/29',
       'subnet 99 10.42.0.24/29',
-      'fw deny compta labdata',
+      'fw deny acct labdata',
       'fw deny rnd erp',
     ],
   }),
@@ -91,7 +104,7 @@ export const SOLUTIONS: Record<string, (level: LevelDef) => Solution> = {
       ['switch24', 7, 9],
     ],
     cables: [
-      ['fai', 'rt-1', 'fiber'],
+      ['isp', 'rt-1', 'fiber'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-2'],
@@ -114,8 +127,8 @@ export const SOLUTIONS: Record<string, (level: LevelDef) => Solution> = {
       ['ap', 21, 5],
     ],
     cables: [
-      ['fai', 'rt-1'],
-      ['fai', 'rt-1'],
+      ['isp', 'rt-1'],
+      ['isp', 'rt-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-1'],
       ['rt-1', 'sw-2'],
@@ -170,11 +183,11 @@ export function buildSolution(
   const errors: string[] = [];
   for (const [kind, x, y] of sol.devices) {
     const r = placeDevice(level, design, kind, x, y, skills);
-    if (typeof r === 'string') errors.push(`${kind} (${x},${y}) : ${r}`);
+    if (typeof r === 'string') errors.push(`${kind} (${x},${y}): ${r}`);
   }
   for (const [a, b, kind] of sol.cables) {
     const r = connect(level, design, a, b, kind ?? 'rj45', skills);
-    if (typeof r === 'string') errors.push(`${a}–${b} : ${r}`);
+    if (typeof r === 'string') errors.push(`${a}–${b}: ${r}`);
   }
   for (const hub of sol.auto ?? []) autoCable(level, design, hub, skills);
   let config = defaultConfig(level);
@@ -189,7 +202,7 @@ export function buildSolution(
     skills,
   );
   for (const cmd of sol.configure ?? []) {
-    for (const line of execute(cmd, host)) if (line.tone === 'err') errors.push(`${cmd} : ${line.text}`);
+    for (const line of execute(cmd, host)) if (line.tone === 'err') errors.push(`${cmd}: ${line.text}`);
   }
   return { design, config, errors };
 }

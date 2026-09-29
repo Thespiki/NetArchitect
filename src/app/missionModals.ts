@@ -1,59 +1,64 @@
-// Briefing avant mission et débriefing de fin de journée.
+// Mission briefing and end-of-day debrief (objectives, score, tier, server verification).
 
-import { euros } from '../core/catalog.ts';
-import type { LevelDef } from '../core/level.ts';
+import { euros, loc, num, pct, pctN, T } from '../i18n/index.ts';
+import { rankName, type LevelDef } from '../core/level.ts';
 import { objectiveLabel, starLabel, type MissionResult } from '../core/objectives.ts';
+import type { RunResponse } from '../core/protocol.ts';
+import { nextTier, tierFor, type ScoreBreakdown } from '../core/score.ts';
 import type { Simulation } from '../core/simulation.ts';
 import { FONT_MONO, hexAlpha, PAL } from '../render/glyphs.ts';
 import { h, stars } from './dom.ts';
 import { openModal, type ModalAction } from './modal.ts';
 
-export function showBriefing(host: HTMLElement, level: LevelDef, restored: boolean, onStart: () => void, onBack: () => void): void {
+export function showBriefing(
+  host: HTMLElement,
+  level: LevelDef,
+  restored: boolean,
+  on: { start: () => void; back: () => void; skip?: () => void },
+): void {
+  const B = T.briefing;
   const users = level.endpoints.filter((e) => e.kind === 'workstation' || e.kind === 'laptop').length;
   const servers = level.endpoints.filter((e) => e.kind === 'server').length;
+  const actions: ModalAction[] = [{ label: B.backCareer, onClick: on.back }];
+  if (on.skip) actions.push({ label: B.skipTraining, onClick: on.skip });
+  actions.push({ label: B.start, kind: 'primary', onClick: on.start });
   openModal(host, {
-    eyebrow: `Mission ${String(level.order).padStart(2, '0')} · ${level.rank}`,
-    title: `${level.company} — ${level.title}`,
+    eyebrow: level.order === 0 ? T.campaign.training : B.eyebrow(String(level.order).padStart(2, '0'), rankName(level.order)),
+    title: `${level.company} — ${loc(level.title)}`,
     wide: true,
     dismissible: false,
     className: 'briefing',
     body: [
-      ...level.brief.map((p) => h('p', { class: 'brief' }, p)),
+      ...level.brief.map((p) => h('p', { class: 'brief' }, loc(p))),
       h(
         'dl',
         { class: 'facts' },
-        h('div', null, h('dt', null, 'Budget'), h('dd', null, euros(level.budget))),
-        h('div', null, h('dt', null, 'Utilisateurs'), h('dd', null, String(users))),
-        h('div', null, h('dt', null, 'Serveurs'), h('dd', null, String(servers))),
-        h('div', null, h('dt', null, 'Journée'), h('dd', null, `9 h → 18 h en ${Math.round(level.dayLength)} s`)),
+        h('div', null, h('dt', null, B.budget), h('dd', null, euros(level.budget))),
+        h('div', null, h('dt', null, B.users), h('dd', null, String(users))),
+        h('div', null, h('dt', null, B.servers), h('dd', null, String(servers))),
+        h('div', null, h('dt', null, B.day), h('dd', null, B.dayLength(Math.round(level.dayLength)))),
       ),
       level.newMechanics.length
-        ? h(
-            'div',
-            { class: 'mechanics' },
-            ...level.newMechanics.map((m) => h('article', null, h('h4', null, m.title), h('p', null, m.text))),
-          )
+        ? h('div', { class: 'mechanics' }, ...level.newMechanics.map((m) => h('article', null, h('h4', null, loc(m.title)), h('p', null, loc(m.text)))))
         : null,
       h(
         'div',
         { class: 'brief-goals' },
-        h('div', null, h('h4', null, 'Objectifs'), h('ul', null, ...level.objectives.map((o) => h('li', null, objectiveLabel(o, level))))),
-        h('div', null, h('h4', null, 'Étoiles bonus'), h('ul', null, ...level.stars.map((s) => h('li', null, `★ ${starLabel(s)}`)))),
+        h('div', null, h('h4', null, B.objectives), h('ul', null, ...level.objectives.map((o) => h('li', null, objectiveLabel(o, level))))),
+        h('div', null, h('h4', null, B.bonusStars), h('ul', null, ...level.stars.map((s) => h('li', null, `★ ${starLabel(s)}`)))),
       ),
-      restored ? h('p', { class: 'muted' }, 'Ton dernier plan pour cette mission a été restauré.') : null,
+      restored ? h('p', { class: 'muted' }, B.restored) : null,
     ],
-    actions: [
-      { label: 'Retour à la carrière', onClick: onBack },
-      { label: 'Commencer', kind: 'primary', onClick: onStart },
-    ],
+    actions,
   });
 }
 
 function sparkline(history: number[], dayLength: number): HTMLElement {
   const W = 400;
   const H = 128;
+  const D = T.debrief;
   const c = h('canvas', { class: 'spark', width: String(W * 2), height: String(H * 2), role: 'img' });
-  c.setAttribute('aria-label', `Frustration au fil de la journée, maximum ${Math.round(Math.max(0, ...history))} %`);
+  c.setAttribute('aria-label', D.sparkAria(Math.max(0, ...history)));
   const g = c.getContext('2d');
   if (!g) return c;
   g.scale(2, 2);
@@ -76,17 +81,12 @@ function sparkline(history: number[], dayLength: number): HTMLElement {
     g.stroke();
     g.fillText(`${v}`, padL - 6, y(v));
   }
-  g.textAlign = 'center';
   g.textBaseline = 'top';
-  const ticks: [number, string, CanvasTextAlign][] = [
-    [0, '9 h', 'left'],
-    [0.5, '13 h 30', 'center'],
-    [1, '18 h', 'right'],
-  ];
-  for (const [f, label, align] of ticks) {
-    g.textAlign = align;
-    g.fillText(label, padL + f * plotW, H - padB + 6);
-  }
+  const aligns: CanvasTextAlign[] = ['left', 'center', 'right'];
+  D.ticks.forEach((label, i) => {
+    g.textAlign = aligns[i];
+    g.fillText(label, padL + (i / 2) * plotW, H - padB + 6);
+  });
   if (history.length > 1) {
     const grad = g.createLinearGradient(0, y(100), 0, y(0));
     grad.addColorStop(0, hexAlpha(PAL.crit, 0.45));
@@ -110,13 +110,75 @@ function sparkline(history: number[], dayLength: number): HTMLElement {
     g.arc(x(last), y(history[last]), 3, 0, Math.PI * 2);
     g.fill();
   }
-  return h('figure', { class: 'spark-fig' }, c, h('figcaption', null, 'Frustration au fil de la journée (%)'));
+  return h('figure', { class: 'spark-fig' }, c, h('figcaption', null, D.sparkCaption));
 }
 
 export interface DebriefInfo {
   gained: number;
   rankUp: string | null;
   next: LevelDef | null;
+  score: ScoreBreakdown;
+  /** Score before this day: shows "new record" and the tier change. */
+  previousBest: number;
+  /** Career totals before and after this day. */
+  totalBefore: number;
+  totalAfter: number;
+  /** Server verdict, when the player is signed in. */
+  verification: Promise<RunResponse | null> | null;
+}
+
+function scoreBlock(level: LevelDef, info: DebriefInfo): HTMLElement | null {
+  if (level.order === 0) return h('p', { class: 'muted fine' }, T.score.trainingNote);
+  const S = T.score;
+  const s = info.score;
+  if (!s.total) return null;
+  const rows: [string, number][] = [
+    [S.completion, s.completion],
+    [S.stars, s.stars],
+    [S.satisfaction, s.satisfaction],
+    [S.reliability, s.reliability],
+    [S.savings, s.savings],
+  ];
+  const record = s.total > info.previousBest;
+  const tierBefore = tierFor(info.totalBefore);
+  const tierAfter = tierFor(info.totalAfter);
+  const next = nextTier(info.totalAfter);
+  const verify = h('p', { class: 'verify', role: 'status' });
+  if (info.verification) {
+    verify.textContent = T.ranking.verifying;
+    verify.dataset.state = 'pending';
+    info.verification.then(
+      (res) => {
+        if (!res) {
+          verify.remove();
+          return;
+        }
+        if (res.accepted) {
+          verify.dataset.state = 'ok';
+          verify.textContent = `✔ ${T.ranking.verified} · ${T.ranking.missionRank(res.missionRank)} · ${T.ranking.worldRank(res.rank)}`;
+        } else {
+          verify.dataset.state = 'ko';
+          verify.textContent = T.ranking.rejected(res.reason);
+        }
+      },
+      () => verify.remove(),
+    );
+  } else verify.hidden = true;
+  return h(
+    'section',
+    { class: 'score-block' },
+    h('h4', null, S.title, record ? h('span', { class: 'record' }, S.newRecord) : null),
+    h('dl', { class: 'score-list' }, ...rows.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `+${num(v)}`)]), h('dt', { class: 'total' }, S.total), h('dd', { class: 'total' }, num(s.total))),
+    h(
+      'p',
+      { class: 'tier-line' },
+      h('span', { class: 'tier-badge', style: `--tier:${tierAfter.color}` }, T.tiers[tierAfter.id]),
+      tierAfter.id !== tierBefore.id ? h('b', { class: 'tier-up' }, ' ▲') : null,
+      ` ${S.career} ${num(info.totalAfter)}`,
+      next ? h('small', { class: 'muted' }, ` · ${S.toNext(next.missing, T.tiers[next.tier.id])}`) : h('small', { class: 'muted' }, ` · ${S.top}`),
+    ),
+    verify,
+  );
 }
 
 export function showDebrief(
@@ -127,31 +189,32 @@ export function showDebrief(
   info: DebriefInfo,
   on: { replay: () => void; next: () => void; campaign: () => void },
 ): void {
+  const D = T.debrief;
   const st = sim.stats;
-  const pct = (x: number) => `${Math.round(x * 100)} %`;
   const okRate = st.transactions ? (st.good + st.late) / st.transactions : 0;
   const checks = (items: { label: string; ok: boolean; detail: string }[]) =>
     h('ul', { class: 'checks' }, ...items.map((o) => h('li', { class: o.ok ? 'ok' : 'ko' }, h('span', null, o.label), h('small', null, o.detail))));
   const stats: [string, string][] = [
-    ['Requêtes servies', `${pct(okRate)} de ${st.transactions}`],
-    ['Requêtes perdues', pct(result.lossRate)],
-    ['Frustration moyenne · pic', `${Math.round(result.avgFrustration)} % · ${Math.round(result.peakFrustration)} %`],
-    ['Budget dépensé', `${euros(result.spent)} / ${euros(level.budget)}`],
+    [D.served, D.servedValue(pct(okRate), st.transactions)],
+    [D.lost, pct(result.lossRate)],
+    [D.frustration, `${pctN(result.avgFrustration)} · ${pctN(result.peakFrustration)}`],
+    [D.spent, `${euros(result.spent)} / ${euros(level.budget)}`],
   ];
-  if (st.probes) stats.push(['Sondes bloquées', `${st.probesBlocked}/${st.probes} · ${st.breaches} brèche(s)`]);
-  if (st.attackPackets) stats.push(['Paquets d’attaque bloqués', `${st.attackBlocked}/${st.attackPackets}`]);
-  if (st.infectedTotal) stats.push(['Postes infectés', String(st.infectedTotal)]);
-  if (st.overheats) stats.push(['Surchauffes', String(st.overheats)]);
+  if (st.probes) stats.push([D.probes, D.probesValue(st.probesBlocked, st.probes, st.breaches)]);
+  if (st.attackPackets) stats.push([D.attack, `${st.attackBlocked}/${st.attackPackets}`]);
+  if (st.infectedTotal) stats.push([D.infected, String(st.infectedTotal)]);
+  if (st.overheats) stats.push([D.overheats, String(st.overheats)]);
 
   const actions: ModalAction[] = [
-    { label: 'Carrière', onClick: on.campaign },
-    { label: result.success ? 'Rejouer' : 'Revoir le plan', kind: result.success && info.next ? 'ghost' : 'primary', onClick: on.replay },
+    { label: D.career, onClick: on.campaign },
+    { label: result.success ? D.replay : D.review, kind: result.success && info.next ? 'ghost' : 'primary', onClick: on.replay },
   ];
-  if (result.success && info.next) actions.push({ label: 'Mission suivante', kind: 'primary', onClick: on.next });
+  if (result.success && info.next) actions.push({ label: D.next, kind: 'primary', onClick: on.next });
 
+  const training = level.order === 0;
   openModal(host, {
-    eyebrow: `${level.company} · ${level.title}`,
-    title: result.success ? 'Mission réussie' : 'Journée perdue',
+    eyebrow: `${level.company} · ${loc(level.title)}`,
+    title: result.success ? (training ? D.trainingDone : D.success) : D.failure,
     wide: true,
     dismissible: false,
     className: `debrief ${result.success ? 'win' : 'lose'}`,
@@ -160,11 +223,11 @@ export function showDebrief(
       h(
         'div',
         { class: 'debrief-grid' },
-        h('div', null, h('h4', null, 'Objectifs'), checks(result.objectives), h('h4', null, 'Étoiles bonus'), checks(result.starRules)),
+        h('div', null, h('h4', null, D.objectives), checks(result.objectives), h('h4', null, D.bonusStars), checks(result.starRules), scoreBlock(level, info)),
         h('div', null, h('dl', { class: 'stat-list' }, ...stats.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])), sparkline(sim.history, Math.ceil(sim.dayLength))),
       ),
-      info.gained ? h('p', { class: 'gain' }, `+${info.gained} point${info.gained > 1 ? 's' : ''} de compétence à dépenser dans l’arbre.`) : null,
-      info.rankUp ? h('p', { class: 'gain' }, `Promotion : tu es désormais ${info.rankUp}.`) : null,
+      info.gained ? h('p', { class: 'gain' }, D.gained(info.gained)) : null,
+      info.rankUp ? h('p', { class: 'gain' }, D.promotion(info.rankUp)) : null,
     ],
     actions,
   });
